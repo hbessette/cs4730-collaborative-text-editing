@@ -39,3 +39,16 @@ target_include_directories(tests PRIVATE include)
 target_link_libraries(tests PRIVATE
   Threads::Threads
 )
+
+option(ENABLE_ASAN "Build tests with AddressSanitizer" OFF)
+option(ENABLE_TSAN "Build tests with ThreadSanitizer" OFF)
+
+if(ENABLE_ASAN)
+  target_compile_options(tests PRIVATE -fsanitize=address -fno-omit-frame-pointer)
+  target_link_options(tests PRIVATE -fsanitize=address)
+endif()
+
+if(ENABLE_TSAN)
+  target_compile_options(tests PRIVATE -fsanitize=thread)
+  target_link_options(tests PRIVATE -fsanitize=thread)
+endif()
