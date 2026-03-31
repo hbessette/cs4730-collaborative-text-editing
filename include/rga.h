@@ -6,8 +6,10 @@
 #include <unordered_map>
 
 struct CharID {
-  int clock = 0;
-  int siteID = 0;
+  int clock;
+  int siteID;
+
+  constexpr CharID(int clock = 0, int siteID = 0) : clock(clock), siteID(siteID) {}
 
   bool operator==(const CharID &o) const {
     return clock == o.clock && siteID == o.siteID;

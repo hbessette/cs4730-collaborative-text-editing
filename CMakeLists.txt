@@ -30,6 +30,8 @@ endif()
 
 add_executable(tests
   tests/test_main.cpp
+  tests/test_rga.cpp
+  src/rga.cpp
 )
 
 target_include_directories(tests PRIVATE include)
