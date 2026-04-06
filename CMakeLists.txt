@@ -32,8 +32,10 @@ add_executable(tests
   tests/test_main.cpp
   tests/test_rga.cpp
   tests/test_serializer.cpp
+  tests/test_peer_socket.cpp
   src/rga.cpp
   src/serializer.cpp
+  src/peer_socket.cpp
 )
 
 target_include_directories(tests PRIVATE include)
