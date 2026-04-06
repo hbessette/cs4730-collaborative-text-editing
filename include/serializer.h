@@ -48,10 +48,13 @@ public:
   // Throws std::runtime_error on malformed input
   static CRDTEngine decodeState(const std::vector<uint8_t> &bytes);
 
-private:
-  static void writeInt32(std::vector<uint8_t> &buf, int32_t val);
-  static int32_t readInt32(const uint8_t *data, size_t &offset);
+  // Big-endian encode/decode helpers — also used by other modules.
+  static void     writeUint16(std::vector<uint8_t> &buf, uint16_t val);
+  static uint16_t readUint16(const uint8_t *data, size_t &offset);
 
-  static void writeUint32(std::vector<uint8_t> &buf, uint32_t val);
+  static void     writeUint32(std::vector<uint8_t> &buf, uint32_t val);
   static uint32_t readUint32(const uint8_t *data, size_t &offset);
+
+  static void    writeInt32(std::vector<uint8_t> &buf, int32_t val);
+  static int32_t readInt32(const uint8_t *data, size_t &offset);
 };

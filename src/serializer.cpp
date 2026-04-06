@@ -1,6 +1,18 @@
 #include "serializer.h"
 #include <stdexcept>
 
+void Serializer::writeUint16(std::vector<uint8_t> &buf, uint16_t val) {
+  buf.push_back(static_cast<uint8_t>((val >> 8) & 0xFF));
+  buf.push_back(static_cast<uint8_t>( val       & 0xFF));
+}
+
+uint16_t Serializer::readUint16(const uint8_t *data, size_t &offset) {
+  uint16_t val = static_cast<uint16_t>(
+      (static_cast<uint16_t>(data[offset]) << 8) | data[offset + 1]);
+  offset += 2;
+  return val;
+}
+
 void Serializer::writeUint32(std::vector<uint8_t> &buf, uint32_t val) {
   buf.push_back(static_cast<uint8_t>((val >> 24) & 0xFF));
   buf.push_back(static_cast<uint8_t>((val >> 16) & 0xFF));
