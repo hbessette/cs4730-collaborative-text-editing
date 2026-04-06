@@ -1,14 +1,11 @@
 #pragma once
 
+#include "rga.h"
 #include <cstdint>
 #include <vector>
-#include "rga.h"
 
 // Top-level message type byte
-enum class MsgType : uint8_t {
-    OPERATION = 0x01,
-    STATE     = 0x02
-};
+enum class MsgType : uint8_t { OPERATION = 0x01, STATE = 0x02 };
 
 // Wire format for all messages:
 //   [1 byte : MsgType]
@@ -37,24 +34,24 @@ enum class MsgType : uint8_t {
 
 class Serializer {
 public:
-    // Encode a single Operation → framed byte buffer
-    static std::vector<uint8_t> encode(const Operation &op);
+  // Encode a single Operation → framed byte buffer
+  static std::vector<uint8_t> encode(const Operation &op);
 
-    // Decode a framed byte buffer → Operation
-    // Throws std::runtime_error on malformed input
-    static Operation decode(const std::vector<uint8_t> &bytes);
+  // Decode a framed byte buffer → Operation
+  // Throws std::runtime_error on malformed input
+  static Operation decode(const std::vector<uint8_t> &bytes);
 
-    // Encode full CRDTEngine state → framed byte buffer
-    static std::vector<uint8_t> encodeState(const CRDTEngine &engine);
+  // Encode full CRDTEngine state → framed byte buffer
+  static std::vector<uint8_t> encodeState(const CRDTEngine &engine);
 
-    // Reconstruct a CRDTEngine from a framed byte buffer
-    // Throws std::runtime_error on malformed input
-    static CRDTEngine decodeState(const std::vector<uint8_t> &bytes);
+  // Reconstruct a CRDTEngine from a framed byte buffer
+  // Throws std::runtime_error on malformed input
+  static CRDTEngine decodeState(const std::vector<uint8_t> &bytes);
 
 private:
-    static void    writeInt32(std::vector<uint8_t> &buf, int32_t val);
-    static int32_t readInt32(const uint8_t *data, size_t &offset);
+  static void writeInt32(std::vector<uint8_t> &buf, int32_t val);
+  static int32_t readInt32(const uint8_t *data, size_t &offset);
 
-    static void     writeUint32(std::vector<uint8_t> &buf, uint32_t val);
-    static uint32_t readUint32(const uint8_t *data, size_t &offset);
+  static void writeUint32(std::vector<uint8_t> &buf, uint32_t val);
+  static uint32_t readUint32(const uint8_t *data, size_t &offset);
 };
