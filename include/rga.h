@@ -71,4 +71,6 @@ private:
   SeqIter visibleIter(int n);
   CharID rootAncestor(CharID id, const CharID &targetParent);
   void insertNode(const CharID &newID, char value, const CharID &leftID);
+
+  friend class Serializer;
 };
