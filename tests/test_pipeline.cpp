@@ -154,7 +154,7 @@ void test_pipeline_end_to_end() {
   std::mutex cvMu;
   std::condition_variable cv;
 
-  pipeB.setOnRemoteOp([&](const Operation &) {
+  pipeB.setOnRemoteOp([&](const Operation &, int) {
     opReceived.store(true);
     cv.notify_one();
   });
@@ -195,11 +195,11 @@ void test_pipeline_bidirectional() {
   std::mutex cvMu;
   std::condition_variable cv;
 
-  pipeA.setOnRemoteOp([&](const Operation &) {
+  pipeA.setOnRemoteOp([&](const Operation &, int) {
     ++opsAtA;
     cv.notify_one();
   });
-  pipeB.setOnRemoteOp([&](const Operation &) {
+  pipeB.setOnRemoteOp([&](const Operation &, int) {
     ++opsAtB;
     cv.notify_one();
   });

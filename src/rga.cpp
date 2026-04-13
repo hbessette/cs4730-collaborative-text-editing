@@ -92,7 +92,21 @@ CharID CRDTEngine::rootAncestor(CharID id, const CharID &targetParent) {
   }
 }
 
-void CRDTEngine::insertNode(const CharID &newID, char value, const CharID &leftID) {
+int CRDTEngine::visibleOffsetOf(const CharID &id) const {
+  if (id == SENTINEL_ID)
+    return -1;
+  int cnt = 0;
+  for (const auto &node : seq_) {
+    if (node.id == id)
+      return cnt;
+    if (!node.tombstoned)
+      ++cnt;
+  }
+  return -1;
+}
+
+void CRDTEngine::insertNode(const CharID &newID, char value,
+                            const CharID &leftID) {
   auto insertPos = std::next(index_.at(leftID));
 
   while (insertPos != seq_.end()) {

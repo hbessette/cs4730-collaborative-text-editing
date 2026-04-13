@@ -1,3 +1,186 @@
-int main() {
-    return 0;
+// p2p-editor: collaborative text editor with CRDT backend and FTXUI front end.
+//
+// Usage:
+//   ./p2p-editor [--port DATA_PORT] [--peer IP:DATA_PORT ...] [--first]
+//
+//   --port P    UDP data port (default 5000). Heartbeat = P+1, TCP sync = P+2,
+//               cursor sync = P+3.
+//   --peer ADDR Known peer "ip:data-port". Can be repeated.
+//   --first     Skip initial state-sync (this node starts the document).
+//
+// Keyboard:
+//   Printable chars / Enter    insert at cursor
+//   Backspace / Delete         delete character
+//   Arrow keys / Home / End    move cursor
+//   Escape or Ctrl+X           quit gracefully (broadcasts LEAVE)
+
+#include "cursor_sync.h"
+#include "editor_ui.h"
+#include "peer_manager.h"
+#include "peer_socket.h"
+#include "pipeline.h"
+#include "rga.h"
+#include "state_sync.h"
+
+#include "ftxui/component/event.hpp"
+#include "ftxui/component/screen_interactive.hpp"
+
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+using namespace ftxui;
+
+struct Args {
+  uint16_t dataPort = 5000;
+  bool isFirst = false;
+  std::vector<std::string> peerDataAddrs;
+};
+
+static Args parseArgs(int argc, char *argv[]) {
+  Args args;
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if ((arg == "--port" || arg == "-p") && i + 1 < argc)
+      args.dataPort = static_cast<uint16_t>(std::stoi(argv[++i]));
+    else if (arg == "--peer" && i + 1 < argc)
+      args.peerDataAddrs.push_back(argv[++i]);
+    else if (arg == "--first")
+      args.isFirst = true;
+  }
+  return args;
+}
+
+// For each "ip:dataPort" peer address, registers:
+//   - the data address with the UDP socket (CRDT ops)
+//   - the heartbeat address (dataPort+1) with PeerManager
+//   - the cursor address (dataPort+3) with CursorSync
+//   - the TCP sync address (dataPort+2) in the returned list
+static std::vector<std::string>
+registerPeers(const std::vector<std::string> &peerDataAddrs,
+              PeerSocket &dataSocket, PeerManager &peerMgr,
+              CursorSync &cursorSync) {
+
+  std::vector<std::string> syncAddrs;
+  for (const auto &addr : peerDataAddrs) {
+    dataSocket.addPeer(addr);
+
+    std::string ip;
+    uint16_t peerDataPort = 5000;
+    auto colon = addr.rfind(':');
+    if (colon != std::string::npos) {
+      ip = addr.substr(0, colon);
+      peerDataPort = static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
+    } else {
+      ip = addr;
+    }
+    peerMgr.addKnownPeer(ip + ":" + std::to_string(peerDataPort + 1));
+    syncAddrs.push_back(ip + ":" + std::to_string(peerDataPort + 2));
+    cursorSync.addPeer(ip + ":" + std::to_string(peerDataPort + 3));
+  }
+  return syncAddrs;
+}
+
+// Adjusts the shared cursor atomically using OT rules, broadcasts the updated
+// position, then triggers a render.
+static void setupRemoteOpCallback(Pipeline &pipeline, CursorSync &cursorSync,
+                                  ScreenInteractive &screen,
+                                  std::shared_ptr<std::atomic<int>> cursor) {
+  pipeline.setOnRemoteOp(
+      [&screen, &cursorSync, cursor](const Operation &op, int visOffset) {
+        if (visOffset >= 0) {
+          if (op.type == OpType::INSERT) {
+            int expected = cursor->load();
+            while (visOffset < expected)
+              if (cursor->compare_exchange_weak(expected, expected + 1))
+                break;
+          } else {
+            int expected = cursor->load();
+            while (visOffset < expected)
+              if (cursor->compare_exchange_weak(expected, expected - 1))
+                break;
+          }
+          cursorSync.broadcast(cursor->load());
+        }
+        screen.PostEvent(Event::Custom);
+      });
+}
+
+// Wires peer-join/leave callbacks.  Join registers the peer's data address
+// with the UDP socket and their cursor address with CursorSync.
+static void setupPeerCallbacks(PeerManager &peerMgr, PeerSocket &dataSocket,
+                               CursorSync &cursorSync,
+                               ScreenInteractive &screen) {
+  peerMgr.setOnPeerJoin(
+      [&dataSocket, &cursorSync, &screen](uint32_t, const std::string &addr) {
+        auto colon = addr.rfind(':');
+        if (colon != std::string::npos) {
+          std::string ip = addr.substr(0, colon);
+          uint16_t hbPort =
+              static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
+          dataSocket.addPeer(ip + ":" + std::to_string(hbPort - 1));
+          cursorSync.addPeer(ip + ":" + std::to_string(hbPort + 2));
+        }
+        screen.PostEvent(Event::Custom);
+      });
+
+  peerMgr.setOnPeerLeave(
+      [&cursorSync, &screen](uint32_t siteID, const std::string &) {
+        cursorSync.removePeer(siteID);
+        screen.PostEvent(Event::Custom);
+      });
+}
+
+int main(int argc, char *argv[]) {
+  const Args args = parseArgs(argc, argv);
+
+  // Companion ports derived from the data port.
+  const uint16_t hbPort = args.dataPort + 1;     // heartbeat / peer discovery
+  const uint16_t tcpPort = args.dataPort + 2;    // TCP state-sync
+  const uint16_t cursorPort = args.dataPort + 3; // UDP cursor positions
+
+  const uint32_t siteID = generateSiteID();
+  CRDTEngine crdt(static_cast<int>(siteID));
+  PeerSocket dataSocket(args.dataPort);
+  Pipeline pipeline(dataSocket, crdt);
+  PeerManager peerMgr(hbPort, siteID);
+  CursorSync cursorSync(cursorPort, siteID);
+
+  auto syncAddrs =
+      registerPeers(args.peerDataAddrs, dataSocket, peerMgr, cursorSync);
+
+  StateSync stateServer(
+      tcpPort, [&pipeline] { return pipeline.serializeState(); },
+      [](const std::vector<uint8_t> &) {});
+  stateServer.startServer();
+
+  auto screen = ScreenInteractive::Fullscreen();
+  auto cursorShared = std::make_shared<std::atomic<int>>(0);
+  std::atomic<bool> running{true};
+
+  // Fire a re-render whenever a remote cursor update arrives.
+  cursorSync.setOnUpdate([&screen] { screen.PostEvent(Event::Custom); });
+
+  setupRemoteOpCallback(pipeline, cursorSync, screen, cursorShared);
+  setupPeerCallbacks(peerMgr, dataSocket, cursorSync, screen);
+
+  peerMgr.start();
+  pipeline.start();
+  cursorSync.start();
+
+  if (!args.isFirst && !syncAddrs.empty())
+    pipeline.syncState(syncAddrs, tcpPort, /*timeoutPerPeerMs=*/3000);
+
+  auto editor =
+      MakeEditor(pipeline, peerMgr, cursorSync, screen, running, cursorShared);
+  screen.Loop(editor);
+
+  pipeline.stop();
+  peerMgr.stop();
+  cursorSync.stop();
+  stateServer.stopServer();
+
+  return 0;
 }

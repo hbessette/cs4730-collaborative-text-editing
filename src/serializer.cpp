@@ -3,7 +3,7 @@
 
 void Serializer::writeUint16(std::vector<uint8_t> &buf, uint16_t val) {
   buf.push_back(static_cast<uint8_t>((val >> 8) & 0xFF));
-  buf.push_back(static_cast<uint8_t>( val       & 0xFF));
+  buf.push_back(static_cast<uint8_t>(val & 0xFF));
 }
 
 uint16_t Serializer::readUint16(const uint8_t *data, size_t &offset) {
@@ -54,6 +54,30 @@ static std::vector<uint8_t> buildFrame(MsgType msgType,
 
   frame.insert(frame.end(), payload.begin(), payload.end());
   return frame;
+}
+
+std::vector<uint8_t> Serializer::encodeCursor(uint32_t siteID, int32_t pos) {
+  std::vector<uint8_t> payload;
+  payload.reserve(8);
+  writeUint32(payload, siteID);
+  writeInt32(payload, pos);
+  return buildFrame(MsgType::CURSOR, payload);
+}
+
+void Serializer::decodeCursor(const std::vector<uint8_t> &bytes,
+                              uint32_t &siteID, int32_t &pos) {
+  if (bytes.size() < 5)
+    throw std::runtime_error("decodeCursor: buffer too short for header");
+  const uint8_t *data = bytes.data();
+  size_t offset = 0;
+  uint8_t msgTypeByte = data[offset++];
+  if (static_cast<MsgType>(msgTypeByte) != MsgType::CURSOR)
+    throw std::runtime_error("decodeCursor: expected CURSOR message type");
+  uint32_t payloadLen = readUint32(data, offset);
+  if (bytes.size() - offset < payloadLen || payloadLen < 8)
+    throw std::runtime_error("decodeCursor: payload too short");
+  siteID = readUint32(data, offset);
+  pos = readInt32(data, offset);
 }
 
 std::vector<uint8_t> Serializer::encode(const Operation &op) {

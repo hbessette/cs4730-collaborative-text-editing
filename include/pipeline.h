@@ -53,21 +53,25 @@ private:
 };
 
 // Pipeline: three-thread send/receive/apply pipeline for collaborative editing.
-//
-// Thread model:
-//   UI thread     → localInsert / localDelete → outgoing_ queue
-//   Send thread   ← outgoing_ queue → PeerSocket::send()
-//   Receive thread← PeerSocket::receive() → incoming_ queue
-//   CRDT thread   ← incoming_ queue → CRDTEngine::applyRemote()
-//
 // CRDTEngine is protected by crdtMutex_. All access to crdt_ — whether from
 // the UI thread (localInsert / localDelete / getDocument) or from the CRDT
 // thread (applyRemote) — must hold crdtMutex_.  This guarantees no data races
 // on the engine and is verifiable with ThreadSanitizer.
 class Pipeline {
 public:
+  // Maximum visible line length shared by all peers (matches editor_ui.cpp).
+  // Any line that grows past this limit is automatically wrapped by inserting
+  // '\n' at this column, keeping all peers' documents in sync.
+  static constexpr int MAX_LINE_WIDTH = 120;
+
   // Callback invoked by the CRDT thread after each remote operation is applied.
-  using RemoteOpCallback = std::function<void(const Operation &)>;
+  // visibleOffset is the visible-string position of the affected character,
+  // computed under crdtMutex_ before the lock is released — so it is
+  // guaranteed to be consistent with the document state the callback sees.
+  // For INSERT: position of the newly inserted char.
+  // For DELETE: former visible position of the deleted char (-1 if not found).
+  using RemoteOpCallback =
+      std::function<void(const Operation &, int visibleOffset)>;
 
   // socket: UDP socket used for sending and receiving operation messages.
   // crdt:   CRDT engine; Pipeline becomes the sole path for all crdt_ access.
@@ -100,9 +104,20 @@ public:
   // Return a snapshot of the current document text.
   std::string getDocument();
 
+  // Return the visible offset (0-based) of the character with the given ID,
+  // counting only non-tombstoned characters that precede it.  Returns -1 if
+  // the ID is not found or is SENTINEL_ID.  Thread-safe (holds crdtMutex_).
+  int visibleOffsetOf(const CharID &id);
+
   // Enqueue an already-constructed Operation for broadcast without touching
   // crdt_. Useful for replaying or forwarding operations.
   void sendOperation(const Operation &op);
+
+  // Scan the document for lines longer than MAX_LINE_WIDTH and insert '\n' at
+  // column MAX_LINE_WIDTH until no such lines remain.  Intended to be called
+  // from the remote-op callback so that inserts from other peers that push a
+  // line over the limit are automatically reflowed on this peer too.
+  void reflowDocument();
 
   // Return the full serialized CRDT state (thread-safe).
   // Suitable as the StateSync::StateProvider callback.
@@ -112,8 +127,8 @@ public:
   // While the transfer is in progress, incoming remote ops are buffered and
   // applied (idempotently) after the state is loaded.
   // Returns true on success, false if every peer failed or timed out.
-  bool syncState(const std::vector<std::string> &peers,
-                 uint16_t tcpPort, int timeoutPerPeerMs = 3000);
+  bool syncState(const std::vector<std::string> &peers, uint16_t tcpPort,
+                 int timeoutPerPeerMs = 3000);
 
 private:
   void sendLoop();
@@ -132,12 +147,12 @@ private:
   std::thread crdtThread_;
 
   std::atomic<bool> running_{false};
-  std::atomic<bool> stopped_{false};  // true = signal pop() callers to exit
+  std::atomic<bool> stopped_{false}; // true = signal pop() callers to exit
 
   // Sync-buffer: while syncing_ is true (under crdtMutex_), the CRDT thread
   // appends incoming ops here instead of applying them immediately.
-  bool syncing_{false};                // guarded by crdtMutex_
-  std::vector<Operation> syncBuffer_;  // guarded by crdtMutex_
+  bool syncing_{false};               // guarded by crdtMutex_
+  std::vector<Operation> syncBuffer_; // guarded by crdtMutex_
 
   RemoteOpCallback onRemoteOp_; // set before start(), read-only afterwards
 };
