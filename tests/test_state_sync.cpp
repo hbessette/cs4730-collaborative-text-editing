@@ -22,8 +22,6 @@ static const uint16_t SS_TCP_A = 6200;
 static const uint16_t SS_TCP_B = 6201;
 static const uint16_t SS_TCP_CRASH = 6202; // for crash-simulation server
 
-// ---- CRDTEngine::loadState unit test ------------------------------------
-
 void test_load_state_replaces_document() {
   CRDTEngine src(1);
   src.localInsert(0, 'h');
@@ -46,8 +44,6 @@ void test_load_state_clock_advances() {
 
   assert(dst.getLamportClock() == srcClock);
 }
-
-// ---- StateSync server + client (single-process, loopback) ---------------
 
 void test_state_sync_server_client() {
   CRDTEngine serverCrdt(1);
@@ -90,8 +86,6 @@ void test_state_sync_server_client() {
   assert(clientCrdt.getDocument() == "hey");
   assert(clientCrdt.getSiteID() == 2 && "siteID preserved");
 }
-
-// ---- Late-joining peer via Pipeline::syncState --------------------------
 
 void test_pipeline_late_join() {
   // Node A: inserts text, serves state.
@@ -136,8 +130,6 @@ void test_pipeline_late_join() {
   assert(elapsed < 5 && "state must arrive within 5 seconds");
   assert(pipeB.getDocument() == "hello");
 }
-
-// ---- Ops buffered during transfer are applied afterwards ----------------
 
 void test_pipeline_ops_buffered_during_sync() {
   // A has one character; B will receive a second character while syncing.
@@ -195,8 +187,6 @@ void test_pipeline_ops_buffered_during_sync() {
   assert(doc.size() == 2 && "buffered op must be applied after sync");
   assert(doc == pipeA.getDocument() && "documents must converge");
 }
-
-// ---- Crash mid-transfer: timeout + retry --------------------------------
 
 // Opens a TCP listener, accepts one connection, sends partial data, closes.
 static void runCrashServer(uint16_t port, std::atomic<bool> &ready) {
@@ -269,8 +259,6 @@ void test_state_sync_crash_retry() {
   std::lock_guard<std::mutex> lk(clientMu);
   assert(clientCrdt.getDocument() == "ok");
 }
-
-// ---- Unreachable peer (connection refused) → fallback -------------------
 
 void test_state_sync_unreachable_fallback() {
   CRDTEngine serverCrdt(1);
