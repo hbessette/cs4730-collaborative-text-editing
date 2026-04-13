@@ -1,0 +1,124 @@
+#pragma once
+
+#include "peer_socket.h"
+#include "rga.h"
+
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <mutex>
+#include <thread>
+
+// Thread-safe MPSC (multi-producer, single-consumer) queue.
+//
+// push() is safe to call from any number of threads concurrently.
+// pop() is meant for a single consumer thread; it blocks until an item is
+// available or the *stop flag becomes true, at which point it returns false
+// immediately (even if items remain in the queue).
+template <typename T> class MpscQueue {
+public:
+  // Push an item. Safe to call from any thread.
+  void push(T item) {
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      q_.push_back(std::move(item));
+    }
+    cv_.notify_one();
+  }
+
+  // Block until an item is available or stop.load() is true.
+  // Returns true and moves the front item into out on success.
+  // Returns false (without modifying out) when stop is set.
+  bool pop(T &out, const std::atomic<bool> &stop) {
+    std::unique_lock<std::mutex> lk(mu_);
+    cv_.wait(lk, [&] { return !q_.empty() || stop.load(); });
+    if (stop.load())
+      return false;
+    out = std::move(q_.front());
+    q_.pop_front();
+    return true;
+  }
+
+  // Wake any blocked pop() call (used during shutdown).
+  void wake() { cv_.notify_all(); }
+
+private:
+  std::mutex mu_;
+  std::condition_variable cv_;
+  std::deque<T> q_;
+};
+
+// Pipeline: three-thread send/receive/apply pipeline for collaborative editing.
+//
+// Thread model:
+//   UI thread     → localInsert / localDelete → outgoing_ queue
+//   Send thread   ← outgoing_ queue → PeerSocket::send()
+//   Receive thread← PeerSocket::receive() → incoming_ queue
+//   CRDT thread   ← incoming_ queue → CRDTEngine::applyRemote()
+//
+// CRDTEngine is protected by crdtMutex_. All access to crdt_ — whether from
+// the UI thread (localInsert / localDelete / getDocument) or from the CRDT
+// thread (applyRemote) — must hold crdtMutex_.  This guarantees no data races
+// on the engine and is verifiable with ThreadSanitizer.
+class Pipeline {
+public:
+  // Callback invoked by the CRDT thread after each remote operation is applied.
+  using RemoteOpCallback = std::function<void(const Operation &)>;
+
+  // socket: UDP socket used for sending and receiving operation messages.
+  // crdt:   CRDT engine; Pipeline becomes the sole path for all crdt_ access.
+  explicit Pipeline(PeerSocket &socket, CRDTEngine &crdt);
+  ~Pipeline();
+
+  Pipeline(const Pipeline &) = delete;
+  Pipeline &operator=(const Pipeline &) = delete;
+
+  // Register a callback invoked by the CRDT thread after a remote op is
+  // applied. Must be called before start().
+  void setOnRemoteOp(RemoteOpCallback cb);
+
+  // Spawn the three background threads (send, receive, CRDT).
+  void start();
+
+  // Signal all threads to stop and join them.
+  void stop();
+
+  bool isRunning() const { return running_.load(); }
+
+  // Apply a local insert to the CRDT and enqueue the resulting op for
+  // broadcast.
+  Operation localInsert(int pos, char c);
+
+  // Apply a local delete to the CRDT and enqueue the resulting op for
+  // broadcast.
+  Operation localDelete(int pos);
+
+  // Return a snapshot of the current document text.
+  std::string getDocument();
+
+  // Enqueue an already-constructed Operation for broadcast without touching
+  // crdt_. Useful for replaying or forwarding operations.
+  void sendOperation(const Operation &op);
+
+private:
+  void sendLoop();
+  void receiveLoop();
+  void crdtLoop();
+
+  PeerSocket &socket_;
+  CRDTEngine &crdt_;
+  std::mutex crdtMutex_; // guards all access to crdt_
+
+  MpscQueue<Operation> outgoing_; // UI thread   → send thread
+  MpscQueue<Operation> incoming_; // recv thread → CRDT thread
+
+  std::thread sendThread_;
+  std::thread receiveThread_;
+  std::thread crdtThread_;
+
+  std::atomic<bool> running_{false};
+  std::atomic<bool> stopped_{false};  // true = signal pop() callers to exit
+
+  RemoteOpCallback onRemoteOp_; // set before start(), read-only afterwards
+};

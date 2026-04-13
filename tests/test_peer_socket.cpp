@@ -69,44 +69,15 @@ void test_peer_socket_send_receive() {
 
 // addPeer with bare IP (no port) should default to the socket's own port.
 void test_peer_socket_bare_ip() {
-  int ready_pipe[2];
-  assert(pipe(ready_pipe) == 0);
+  PeerSocket sock(static_cast<uint16_t>(BASE_PORT + 2));
 
-  pid_t pid = fork();
-  assert(pid >= 0);
+  sock.addPeer("127.0.0.1");
 
-  if (pid == 0) {
-    close(ready_pipe[0]);
-    int code = 1;
-    try {
-      PeerSocket sock(static_cast<uint16_t>(BASE_PORT + 2));
-      char sig = 1;
-      write(ready_pipe[1], &sig, 1);
-      close(ready_pipe[1]);
-      auto result = sock.receive(5000);
-      std::vector<uint8_t> expected = {'o', 'k'};
-      if (result.first == expected)
-        code = 0;
-    } catch (...) {
-      close(ready_pipe[1]);
-    }
-    _exit(code);
+  std::vector<uint8_t> msg = {'o', 'k'};
+  sock.send(msg);
 
-  } else {
-    close(ready_pipe[1]);
-    char sig;
-    read(ready_pipe[0], &sig, 1);
-    close(ready_pipe[0]);
-    usleep(10000);
-
-    PeerSocket sock(static_cast<uint16_t>(BASE_PORT + 2));
-    sock.addPeer("127.0.0.1:" + std::to_string(BASE_PORT + 2));
-    sock.send({'o', 'k'});
-
-    int status;
-    waitpid(pid, &status, 0);
-    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-  }
+  auto result = sock.receive(1000);
+  assert(result.first == msg && "bare-IP addPeer did not default to socket's own port");
 }
 
 // addPeer with invalid address should throw.
