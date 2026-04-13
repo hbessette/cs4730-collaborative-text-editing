@@ -2,6 +2,8 @@
 
 #include "peer_socket.h"
 #include "rga.h"
+#include "serializer.h"
+#include "state_sync.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -9,6 +11,7 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 // Thread-safe MPSC (multi-producer, single-consumer) queue.
 //
@@ -101,6 +104,17 @@ public:
   // crdt_. Useful for replaying or forwarding operations.
   void sendOperation(const Operation &op);
 
+  // Return the full serialized CRDT state (thread-safe).
+  // Suitable as the StateSync::StateProvider callback.
+  std::vector<uint8_t> serializeState();
+
+  // Request full document state from one of the given TCP peers ("ip:port").
+  // While the transfer is in progress, incoming remote ops are buffered and
+  // applied (idempotently) after the state is loaded.
+  // Returns true on success, false if every peer failed or timed out.
+  bool syncState(const std::vector<std::string> &peers,
+                 uint16_t tcpPort, int timeoutPerPeerMs = 3000);
+
 private:
   void sendLoop();
   void receiveLoop();
@@ -119,6 +133,11 @@ private:
 
   std::atomic<bool> running_{false};
   std::atomic<bool> stopped_{false};  // true = signal pop() callers to exit
+
+  // Sync-buffer: while syncing_ is true (under crdtMutex_), the CRDT thread
+  // appends incoming ops here instead of applying them immediately.
+  bool syncing_{false};                // guarded by crdtMutex_
+  std::vector<Operation> syncBuffer_;  // guarded by crdtMutex_
 
   RemoteOpCallback onRemoteOp_; // set before start(), read-only afterwards
 };

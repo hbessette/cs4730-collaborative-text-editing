@@ -51,6 +51,10 @@ public:
   int getSiteID() const { return siteID_; }
   int getLamportClock() const { return clock_; }
 
+  // Replace this engine's document state with other's, keeping our siteID.
+  // Rebuilds the internal index after move. O(n) in document length.
+  void loadState(CRDTEngine &&other);
+
 private:
   struct Node {
     CharID id;

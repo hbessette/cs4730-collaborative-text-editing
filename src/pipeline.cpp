@@ -79,11 +79,69 @@ void Pipeline::receiveLoop() {
 void Pipeline::crdtLoop() {
   Operation op;
   while (incoming_.pop(op, stopped_)) {
+    bool buffered = false;
     {
       std::lock_guard<std::mutex> lk(crdtMutex_);
-      crdt_.applyRemote(op);
+      if (syncing_) {
+        syncBuffer_.push_back(op);
+        buffered = true;
+      } else {
+        crdt_.applyRemote(op);
+      }
     }
-    if (onRemoteOp_)
+    if (!buffered && onRemoteOp_)
       onRemoteOp_(op);
   }
+}
+
+std::vector<uint8_t> Pipeline::serializeState() {
+  std::lock_guard<std::mutex> lk(crdtMutex_);
+  return Serializer::encodeState(crdt_);
+}
+
+bool Pipeline::syncState(const std::vector<std::string> &peers,
+                         uint16_t tcpPort, int timeoutPerPeerMs) {
+  // enable buffering so the CRDT thread queues ops during transfer.
+  {
+    std::lock_guard<std::mutex> lk(crdtMutex_);
+    syncing_ = true;
+    syncBuffer_.clear();
+  }
+
+  bool ok = false;
+  StateSync syncer(
+      tcpPort,
+      /*provider=*/[] { return std::vector<uint8_t>{}; }, // server unused here
+      /*consumer=*/
+      [this](const std::vector<uint8_t> &bytes) {
+        CRDTEngine newState = Serializer::decodeState(bytes);
+
+        load state and drain the buffer, all under the mutex.
+        std::vector<Operation> toNotify;
+        {
+          std::lock_guard<std::mutex> lk(crdtMutex_);
+          crdt_.loadState(std::move(newState));
+          for (const auto &op : syncBuffer_)
+            crdt_.applyRemote(op);
+          toNotify = std::move(syncBuffer_);
+          syncBuffer_.clear();
+          syncing_ = false;
+        }
+        // Fire callbacks outside the mutex to avoid re-entrancy deadlock.
+        if (onRemoteOp_)
+          for (const auto &op : toNotify)
+            onRemoteOp_(op);
+      });
+
+  // TCP transfer (no lock held during network I/O).
+  ok = syncer.requestState(peers, timeoutPerPeerMs);
+
+  if (!ok) {
+    // Clear buffering state if every peer failed.
+    std::lock_guard<std::mutex> lk(crdtMutex_);
+    syncing_ = false;
+    syncBuffer_.clear();
+  }
+
+  return ok;
 }

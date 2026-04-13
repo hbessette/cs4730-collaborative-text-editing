@@ -35,11 +35,13 @@ add_executable(tests
   tests/test_peer_socket.cpp
   tests/test_peer_manager.cpp
   tests/test_pipeline.cpp
+  tests/test_state_sync.cpp
   src/rga.cpp
   src/serializer.cpp
   src/peer_socket.cpp
   src/peer_manager.cpp
   src/pipeline.cpp
+  src/state_sync.cpp
 )
 
 target_include_directories(tests PRIVATE include)
