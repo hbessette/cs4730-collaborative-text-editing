@@ -108,7 +108,8 @@ void test_concurrent_insert_same_position() {
 }
 
 // Both sites delete the same character concurrently.
-// The second delete is a no-op (tombstone already set); document must be empty on both.
+// The second delete is a no-op (tombstone already set); document must be empty
+// on both.
 void test_concurrent_delete_same_character() {
   CRDTEngine site1(1), site2(2);
 
@@ -138,7 +139,7 @@ void test_insert_after_deleted_character() {
 
   // concurrent: site2 deletes 'a', site1 inserts 'b' after 'a'
   Operation op_del = site2.localDelete(0);
-  Operation op_b   = site1.localInsert(1, 'b'); // left neighbor = 'a'
+  Operation op_b = site1.localInsert(1, 'b'); // left neighbor = 'a'
 
   site1.applyRemote(op_del); // 'a' tombstoned; 'b' still present
   site2.applyRemote(op_b);   // 'b' inserted after tombstoned 'a'
@@ -177,7 +178,8 @@ void test_randomized_convergence() {
   // CharIDs created by the same site at lower clocks.
   for (int s = 0; s < 3; s++) {
     for (int other = 0; other < 3; other++) {
-      if (other == s) continue;
+      if (other == s)
+        continue;
       for (const Operation &op : logs[other]) {
         sites[s].applyRemote(op);
       }
@@ -189,7 +191,8 @@ void test_randomized_convergence() {
 }
 
 // Ops from two sites applied in opposite orders must yield the same document.
-// engine_A receives site1's ops then site2's; engine_B receives site2's then site1's.
+// engine_A receives site1's ops then site2's; engine_B receives site2's then
+// site1's.
 void test_commutativity() {
   CRDTEngine site1(1), site2(2);
   std::vector<Operation> log1, log2;
@@ -201,12 +204,16 @@ void test_commutativity() {
   log2.push_back(site2.localInsert(1, 'b'));
 
   CRDTEngine engine_A(0);
-  for (const Operation &op : log1) engine_A.applyRemote(op);
-  for (const Operation &op : log2) engine_A.applyRemote(op);
+  for (const Operation &op : log1)
+    engine_A.applyRemote(op);
+  for (const Operation &op : log2)
+    engine_A.applyRemote(op);
 
   CRDTEngine engine_B(0);
-  for (const Operation &op : log2) engine_B.applyRemote(op);
-  for (const Operation &op : log1) engine_B.applyRemote(op);
+  for (const Operation &op : log2)
+    engine_B.applyRemote(op);
+  for (const Operation &op : log1)
+    engine_B.applyRemote(op);
 
   assert(engine_A.getDocument() == engine_B.getDocument());
 }

@@ -1,5 +1,13 @@
 #include "rga.h"
 
+void CRDTEngine::loadState(CRDTEngine &&other) {
+  clock_ = other.clock_;
+  seq_ = std::move(other.seq_);
+  index_.clear();
+  for (auto it = seq_.begin(); it != seq_.end(); ++it)
+    index_[it->id] = it;
+}
+
 CRDTEngine::CRDTEngine(int siteID) : siteID_(siteID), clock_(0) {
   seq_.push_back({SENTINEL_ID, '\0', true, SENTINEL_ID});
   index_[SENTINEL_ID] = seq_.begin();
@@ -84,7 +92,21 @@ CharID CRDTEngine::rootAncestor(CharID id, const CharID &targetParent) {
   }
 }
 
-void CRDTEngine::insertNode(const CharID &newID, char value, const CharID &leftID) {
+int CRDTEngine::visibleOffsetOf(const CharID &id) const {
+  if (id == SENTINEL_ID)
+    return -1;
+  int cnt = 0;
+  for (const auto &node : seq_) {
+    if (node.id == id)
+      return cnt;
+    if (!node.tombstoned)
+      ++cnt;
+  }
+  return -1;
+}
+
+void CRDTEngine::insertNode(const CharID &newID, char value,
+                            const CharID &leftID) {
   auto insertPos = std::next(index_.at(leftID));
 
   while (insertPos != seq_.end()) {

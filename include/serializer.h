@@ -5,7 +5,7 @@
 #include <vector>
 
 // Top-level message type byte
-enum class MsgType : uint8_t { OPERATION = 0x01, STATE = 0x02 };
+enum class MsgType : uint8_t { OPERATION = 0x01, STATE = 0x02, CURSOR = 0x03 };
 
 // Wire format for all messages:
 //   [1 byte : MsgType]
@@ -48,13 +48,21 @@ public:
   // Throws std::runtime_error on malformed input
   static CRDTEngine decodeState(const std::vector<uint8_t> &bytes);
 
+  // Encode a cursor position packet: [siteID: uint32][pos: int32].
+  static std::vector<uint8_t> encodeCursor(uint32_t siteID, int32_t pos);
+
+  // Decode a cursor position packet.
+  // Throws std::runtime_error on malformed input.
+  static void decodeCursor(const std::vector<uint8_t> &bytes, uint32_t &siteID,
+                           int32_t &pos);
+
   // Big-endian encode/decode helpers — also used by other modules.
-  static void     writeUint16(std::vector<uint8_t> &buf, uint16_t val);
+  static void writeUint16(std::vector<uint8_t> &buf, uint16_t val);
   static uint16_t readUint16(const uint8_t *data, size_t &offset);
 
-  static void     writeUint32(std::vector<uint8_t> &buf, uint32_t val);
+  static void writeUint32(std::vector<uint8_t> &buf, uint32_t val);
   static uint32_t readUint32(const uint8_t *data, size_t &offset);
 
-  static void    writeInt32(std::vector<uint8_t> &buf, int32_t val);
+  static void writeInt32(std::vector<uint8_t> &buf, int32_t val);
   static int32_t readInt32(const uint8_t *data, size_t &offset);
 };
