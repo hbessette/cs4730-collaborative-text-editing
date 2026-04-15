@@ -1,4 +1,5 @@
 #include "state_sync.h"
+#include "net_utils.h"
 #include "serializer.h"
 
 #include <arpa/inet.h>
@@ -159,17 +160,14 @@ bool StateSync::requestState(const std::vector<std::string> &peers,
   return false;
 }
 
-bool StateSync::tryPeer(const std::string &addr, int timeoutMs) {
-  // Parse "ip:port" or bare "ip" (uses tcpPort_).
+// Core client logic: connect to a single "ip:port" peer, send STATE_REQUEST,
+// receive the full STATE frame, and deliver it to consumer.
+static bool tryPeerImpl(const std::string &addr, uint16_t defaultPort,
+                        const StateSync::StateConsumer &consumer,
+                        int timeoutMs) {
   std::string ip;
-  uint16_t port = tcpPort_;
-  std::size_t colon = addr.rfind(':');
-  if (colon != std::string::npos) {
-    ip = addr.substr(0, colon);
-    port = static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
-  } else {
-    ip = addr;
-  }
+  uint16_t port;
+  parseAddr(addr, ip, port, defaultPort);
 
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0)
@@ -219,8 +217,8 @@ bool StateSync::tryPeer(const std::string &addr, int timeoutMs) {
   ::fcntl(fd, F_SETFL, flags);
 
   // Send STATE_REQUEST byte.
-  uint8_t req = MSG_STATE_REQUEST;
-  if (!writeAll(fd, &req, 1)) {
+  static constexpr uint8_t kStateRequest = 0x01;
+  if (!writeAll(fd, &kStateRequest, 1)) {
     ::close(fd);
     return false;
   }
@@ -252,9 +250,23 @@ bool StateSync::tryPeer(const std::string &addr, int timeoutMs) {
 
   // Hand the bytes to the caller-supplied consumer.
   try {
-    consumer_(frame);
+    consumer(frame);
   } catch (...) {
     return false;
   }
   return true;
+}
+
+bool StateSync::tryPeer(const std::string &addr, int timeoutMs) {
+  return tryPeerImpl(addr, tcpPort_, consumer_, timeoutMs);
+}
+
+bool StateSync::requestState(const std::vector<std::string> &peers,
+                             uint16_t tcpPort, const StateConsumer &consumer,
+                             int timeoutPerPeerMs) {
+  for (const auto &addr : peers) {
+    if (tryPeerImpl(addr, tcpPort, consumer, timeoutPerPeerMs))
+      return true;
+  }
+  return false;
 }

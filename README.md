@@ -73,6 +73,44 @@ Each instance occupies four consecutive ports starting from `--port P`:
 | Home / End              | Jump to line start / end        |
 | Escape                  | Quit (broadcasts LEAVE to peers)|
 
+### Logging
+
+By default, logs are written to `logs/<siteID>.log` in the current directory (the `logs/` folder is created automatically). Override the path with `--log-path FILE`:
+
+```bash
+./build/p2p-editor --first --port 5000
+# → writes to logs/<siteHex>.log
+
+./build/p2p-editor --port 5010 --peer 127.0.0.1:5000 --log-path /tmp/peer-B.log
+# → writes to /tmp/peer-B.log
+```
+
+Log lines follow the format:
+
+```
+[YYYY-MM-DD HH:MM:SS.mmm] [LEVEL] [SITEHHEX] [module] message
+```
+
+Logged events include peer join/leave, state sync start/result, and (when debug logging is compiled in) every operation sent and received with a millisecond timestamp for latency measurement.
+
+To correlate send and receive latency across peers, join `OP_SEND` entries from one peer's log with `OP_RECV` entries from another on the same `clock` + `siteID` values.
+
+#### Debug logging
+
+Operation-level `DEBUG` entries are compiled out by default. Enable them at build time:
+
+```bash
+cmake -B build -DENABLE_DEBUG_LOG=ON
+cmake --build build -j4
+```
+
+To build without debug logging (production):
+
+```bash
+cmake -B build -DENABLE_DEBUG_LOG=OFF
+cmake --build build -j4
+```
+
 ## Test
 
 ```bash

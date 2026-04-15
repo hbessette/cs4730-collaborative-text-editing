@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <list>
 #include <stdexcept>
 #include <string>
@@ -7,9 +8,9 @@
 
 struct CharID {
   int clock;
-  int siteID;
+  uint32_t siteID;
 
-  constexpr CharID(int clock = 0, int siteID = 0)
+  constexpr CharID(int clock = 0, uint32_t siteID = 0)
       : clock(clock), siteID(siteID) {}
 
   bool operator==(const CharID &o) const {
@@ -43,13 +44,13 @@ struct Operation {
 
 class CRDTEngine {
 public:
-  explicit CRDTEngine(int siteID);
+  explicit CRDTEngine(uint32_t siteID);
   Operation localInsert(int pos, char c);
   Operation localDelete(int pos);
   void applyRemote(const Operation &op);
   std::string getDocument() const;
 
-  int getSiteID() const { return siteID_; }
+  uint32_t getSiteID() const { return siteID_; }
   int getLamportClock() const { return clock_; }
 
   // Replace this engine's document state with other's, keeping our siteID.
@@ -74,7 +75,7 @@ private:
   using SeqIter = std::list<Node>::iterator;
   using IdMap = std::unordered_map<CharID, SeqIter, CharIDHash>;
 
-  int siteID_;
+  uint32_t siteID_;
   int clock_;
   std::list<Node> seq_;
   IdMap index_;

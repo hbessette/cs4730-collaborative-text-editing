@@ -1,4 +1,5 @@
 #include "peer_socket.h"
+#include "net_utils.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -59,14 +60,7 @@ void PeerSocket::addPeer(const std::string &addr) {
 
   std::string ip;
   uint16_t port = port_;
-
-  std::size_t colon = addr.rfind(':');
-  if (colon != std::string::npos) {
-    ip = addr.substr(0, colon);
-    port = static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
-  } else {
-    ip = addr;
-  }
+  parseAddr(addr, ip, port, port_);
 
   if (::inet_pton(AF_INET, ip.c_str(), &sa.sin_addr) != 1)
     throw std::runtime_error("PeerSocket::addPeer: invalid address: " + addr);

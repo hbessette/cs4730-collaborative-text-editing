@@ -1,5 +1,20 @@
 #include "pipeline.h"
+#include "logger.h"
 #include "serializer.h"
+#include "state_sync.h"
+
+#include <chrono>
+#include <cstring>
+
+static long long nowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+static const char *opTypeName(OpType t) {
+  return t == OpType::INSERT ? "INSERT" : "DELETE";
+}
 
 Pipeline::Pipeline(PeerSocket &socket, CRDTEngine &crdt)
     : socket_(socket), crdt_(crdt) {}
@@ -81,6 +96,10 @@ void Pipeline::sendLoop() {
   while (outgoing_.pop(op, stopped_)) {
     std::vector<uint8_t> bytes = Serializer::encode(op);
     socket_.send(bytes);
+    LOG_DEBUG("pipeline", std::string("OP_SEND type=") + opTypeName(op.type) +
+                              " clock=" + std::to_string(op.id.clock) +
+                              " siteID=" + std::to_string(op.id.siteID) +
+                              " ts_ms=" + std::to_string(nowMs()));
   }
 }
 
@@ -90,7 +109,13 @@ void Pipeline::receiveLoop() {
       auto result = socket_.receive(100);
       Operation op = Serializer::decode(result.first);
       incoming_.push(op);
-    } catch (const std::runtime_error &) {
+      LOG_DEBUG("pipeline", std::string("OP_RECV type=") + opTypeName(op.type) +
+                                " clock=" + std::to_string(op.id.clock) +
+                                " siteID=" + std::to_string(op.id.siteID) +
+                                " ts_ms=" + std::to_string(nowMs()));
+    } catch (const std::runtime_error &e) {
+      if (std::strstr(e.what(), "timeout") == nullptr)
+        LOG_ERROR("pipeline", std::string("receive error: ") + e.what());
     }
   }
 }
@@ -108,6 +133,10 @@ void Pipeline::crdtLoop() {
       } else {
         crdt_.applyRemote(op);
         visOffset = crdt_.visibleOffsetOf(op.id);
+        LOG_DEBUG("pipeline", std::string("OP_APPLY type=") +
+                                  opTypeName(op.type) +
+                                  " clock=" + std::to_string(op.id.clock) +
+                                  " siteID=" + std::to_string(op.id.siteID));
       }
     }
     if (!buffered && onRemoteOp_)
@@ -125,34 +154,15 @@ void Pipeline::crdtLoop() {
         unknown = true;
       }
     }
-    if (unknown && onUnknownPeer_)
-      onUnknownPeer_(sid);
-  }
-}
-
-// Repeatedly scan for overlong lines and insert '\n' until the document is
-// fully wrapped.  Re-fetching the doc after each fix is safe because
-// localInsert acquires crdtMutex_ independently.
-void Pipeline::reflowDocument() {
-  bool fixed = true;
-  while (fixed) {
-    fixed = false;
-    std::string doc = getDocument();
-    int lineStart = 0;
-    for (int i = 0; i <= static_cast<int>(doc.size()); ++i) {
-      bool atEnd = (i == static_cast<int>(doc.size()));
-      if (atEnd || doc[i] == '\n') {
-        int lineLen = i - lineStart;
-        if (lineLen > MAX_LINE_WIDTH) {
-          localInsert(lineStart + MAX_LINE_WIDTH, '\n');
-          fixed = true;
-          break;
-        }
-        lineStart = i + 1;
-      }
+    if (unknown) {
+      LOG_INFO("pipeline", "unknown peer siteID=" + std::to_string(sid) +
+                               " triggering state sync");
+      if (onUnknownPeer_)
+        onUnknownPeer_(sid);
     }
   }
 }
+
 
 std::vector<uint8_t> Pipeline::serializeState() {
   std::lock_guard<std::mutex> lk(crdtMutex_);
@@ -166,12 +176,10 @@ bool Pipeline::syncState(const std::vector<std::string> &peers,
     syncing_ = true;
     syncBuffer_.clear();
   }
+  LOG_INFO("pipeline", "syncState start peers=" + std::to_string(peers.size()));
 
-  bool ok = false;
-  StateSync syncer(
-      tcpPort,
-      /*provider=*/[] { return std::vector<uint8_t>{}; },
-      /*consumer=*/
+  bool ok = StateSync::requestState(
+      peers, tcpPort,
       [this](const std::vector<uint8_t> &bytes) {
         CRDTEngine newState = Serializer::decodeState(bytes);
         std::vector<std::pair<Operation, int>> toNotify;
@@ -186,13 +194,15 @@ bool Pipeline::syncState(const std::vector<std::string> &peers,
           syncing_ = false;
         }
         if (onRemoteOp_)
-          for (const auto &[op, vis] : toNotify)
-            onRemoteOp_(op, vis);
-      });
+          for (const auto &entry : toNotify)
+            onRemoteOp_(entry.first, entry.second);
+      },
+      timeoutPerPeerMs);
 
-  ok = syncer.requestState(peers, timeoutPerPeerMs);
-
-  if (!ok) {
+  if (ok) {
+    LOG_INFO("pipeline", "syncState success");
+  } else {
+    LOG_WARN("pipeline", "syncState failed — all peers exhausted or timed out");
     std::lock_guard<std::mutex> lk(crdtMutex_);
     syncing_ = false;
     syncBuffer_.clear();

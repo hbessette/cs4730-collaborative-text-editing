@@ -3,7 +3,6 @@
 #include "peer_socket.h"
 #include "rga.h"
 #include "serializer.h"
-#include "state_sync.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -125,12 +124,6 @@ public:
   // Enqueue an already-constructed Operation for broadcast without touching
   // crdt_. Useful for replaying or forwarding operations.
   void sendOperation(const Operation &op);
-
-  // Scan the document for lines longer than MAX_LINE_WIDTH and insert '\n' at
-  // column MAX_LINE_WIDTH until no such lines remain.  Intended to be called
-  // from the remote-op callback so that inserts from other peers that push a
-  // line over the limit are automatically reflowed on this peer too.
-  void reflowDocument();
 
   // Return the full serialized CRDT state (thread-safe).
   // Suitable as the StateSync::StateProvider callback.

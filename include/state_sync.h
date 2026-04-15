@@ -68,6 +68,13 @@ public:
   bool requestState(const std::vector<std::string> &peers,
                     int timeoutPerPeerMs = 3000);
 
+  // Static client-only overload: connect to each peer in turn without
+  // constructing a StateSync server object. Useful when only the client
+  // role is needed (e.g. Pipeline::syncState).
+  static bool requestState(const std::vector<std::string> &peers,
+                           uint16_t tcpPort, const StateConsumer &consumer,
+                           int timeoutPerPeerMs = 3000);
+
 private:
   void serverLoop();
   void handleClient(int clientFd);

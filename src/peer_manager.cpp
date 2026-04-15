@@ -1,4 +1,6 @@
 #include "peer_manager.h"
+#include "logger.h"
+#include "net_utils.h"
 #include "serializer.h"
 
 #include <arpa/inet.h>
@@ -106,7 +108,9 @@ void PeerManager::processMsg(const std::vector<uint8_t> &data,
   if (sender == siteID_)
     return;
 
-  std::string ip = senderAddr.substr(0, senderAddr.rfind(':'));
+  std::string ip;
+  uint16_t senderPort = 0;
+  parseAddr(senderAddr, ip, senderPort);
   std::string canonAddr = ip + ":" + std::to_string(port);
 
   if (type == HBMsgType::LEAVE) {
@@ -121,18 +125,22 @@ void PeerManager::processMsg(const std::vector<uint8_t> &data,
       peers_.erase(it);
       cb = leaveCb_;
     }
+    LOG_INFO("peer_manager", "peer leave (graceful) siteID=" +
+                                 siteToHex(sender) + " addr=" + addr);
     if (cb)
       cb(sender, addr);
     return;
   }
 
   bool isNew = false;
+  PeerCallback joinCb;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = peers_.find(sender);
     if (it == peers_.end()) {
       peers_[sender] = {canonAddr, std::chrono::steady_clock::now()};
       isNew = true;
+      joinCb = joinCb_;
     } else {
       it->second.lastSeen = std::chrono::steady_clock::now();
     }
@@ -141,14 +149,10 @@ void PeerManager::processMsg(const std::vector<uint8_t> &data,
   if (isNew) {
     socket_.addPeer(canonAddr);
     sendMsg(HBMsgType::JOIN);
-
-    PeerCallback cb;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      cb = joinCb_;
-    }
-    if (cb)
-      cb(sender, canonAddr);
+    LOG_INFO("peer_manager",
+             "peer joined siteID=" + siteToHex(sender) + " addr=" + canonAddr);
+    if (joinCb)
+      joinCb(sender, canonAddr);
   }
 }
 
@@ -173,7 +177,10 @@ void PeerManager::checkDeadPeers() {
     }
     cb = leaveCb_;
   }
-  for (const auto &kv : dead)
+  for (const auto &kv : dead) {
+    LOG_WARN("peer_manager", "peer timeout siteID=" + siteToHex(kv.first) +
+                                 " addr=" + kv.second);
     if (cb)
       cb(kv.first, kv.second);
+  }
 }

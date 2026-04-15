@@ -37,6 +37,7 @@ add_executable(tests
   tests/test_pipeline.cpp
   tests/test_state_sync.cpp
   tests/test_crash_recovery.cpp
+  src/logger.cpp
   src/rga.cpp
   src/serializer.cpp
   src/peer_socket.cpp
@@ -62,4 +63,10 @@ endif()
 if(ENABLE_TSAN)
   target_compile_options(tests PRIVATE -fsanitize=thread)
   target_link_options(tests PRIVATE -fsanitize=thread)
+endif()
+
+option(ENABLE_DEBUG_LOG "Compile in DEBUG-level log statements" OFF)
+if(ENABLE_DEBUG_LOG)
+  target_compile_definitions(p2p-editor PRIVATE ENABLE_DEBUG_LOG)
+  target_compile_definitions(tests PRIVATE ENABLE_DEBUG_LOG)
 endif()

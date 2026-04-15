@@ -46,11 +46,7 @@ static std::vector<uint8_t> buildFrame(MsgType msgType,
   frame.push_back(static_cast<uint8_t>(msgType));
 
   // payload length (big-endian uint32)
-  uint32_t len = static_cast<uint32_t>(payload.size());
-  frame.push_back(static_cast<uint8_t>((len >> 24) & 0xFF));
-  frame.push_back(static_cast<uint8_t>((len >> 16) & 0xFF));
-  frame.push_back(static_cast<uint8_t>((len >> 8) & 0xFF));
-  frame.push_back(static_cast<uint8_t>(len & 0xFF));
+  Serializer::writeUint32(frame, static_cast<uint32_t>(payload.size()));
 
   frame.insert(frame.end(), payload.begin(), payload.end());
   return frame;
@@ -88,9 +84,9 @@ std::vector<uint8_t> Serializer::encode(const Operation &op) {
   payload.push_back(op.type == OpType::INSERT ? 0x00 : 0x01);
 
   writeInt32(payload, static_cast<int32_t>(op.id.clock));
-  writeInt32(payload, static_cast<int32_t>(op.id.siteID));
+  writeUint32(payload, op.id.siteID);
   writeInt32(payload, static_cast<int32_t>(op.leftNeighborID.clock));
-  writeInt32(payload, static_cast<int32_t>(op.leftNeighborID.siteID));
+  writeUint32(payload, op.leftNeighborID.siteID);
 
   payload.push_back(static_cast<uint8_t>(op.value));
 
@@ -125,9 +121,9 @@ Operation Serializer::decode(const std::vector<uint8_t> &bytes) {
   op.type = (typeByte == 0x00) ? OpType::INSERT : OpType::DELETE;
 
   op.id.clock = readInt32(data, offset);
-  op.id.siteID = readInt32(data, offset);
+  op.id.siteID = readUint32(data, offset);
   op.leftNeighborID.clock = readInt32(data, offset);
-  op.leftNeighborID.siteID = readInt32(data, offset);
+  op.leftNeighborID.siteID = readUint32(data, offset);
   op.value = static_cast<char>(data[offset++]);
 
   return op;
@@ -136,7 +132,7 @@ Operation Serializer::decode(const std::vector<uint8_t> &bytes) {
 std::vector<uint8_t> Serializer::encodeState(const CRDTEngine &engine) {
   std::vector<uint8_t> payload;
 
-  writeInt32(payload, static_cast<int32_t>(engine.siteID_));
+  writeUint32(payload, engine.siteID_);
   writeInt32(payload, static_cast<int32_t>(engine.clock_));
 
   // Count nodes (excluding the sentinel)
@@ -154,9 +150,9 @@ std::vector<uint8_t> Serializer::encodeState(const CRDTEngine &engine) {
       continue;
 
     writeInt32(payload, static_cast<int32_t>(node.id.clock));
-    writeInt32(payload, static_cast<int32_t>(node.id.siteID));
+    writeUint32(payload, node.id.siteID);
     writeInt32(payload, static_cast<int32_t>(node.leftNeighborID.clock));
-    writeInt32(payload, static_cast<int32_t>(node.leftNeighborID.siteID));
+    writeUint32(payload, node.leftNeighborID.siteID);
     payload.push_back(static_cast<uint8_t>(node.value));
     payload.push_back(node.tombstoned ? 0x01 : 0x00);
   }
@@ -189,7 +185,7 @@ CRDTEngine Serializer::decodeState(const std::vector<uint8_t> &bytes) {
         "Serializer::decodeState: state payload too short");
   }
 
-  int32_t siteID = readInt32(data, offset);
+  uint32_t siteID = readUint32(data, offset);
   int32_t clock = readInt32(data, offset);
   uint32_t nodeCount = readUint32(data, offset);
 
@@ -200,16 +196,16 @@ CRDTEngine Serializer::decodeState(const std::vector<uint8_t> &bytes) {
   }
 
   // Reconstruct engine: build seq_ and index_ directly
-  CRDTEngine engine(static_cast<int>(siteID));
+  CRDTEngine engine(siteID);
   engine.clock_ = static_cast<int>(clock);
 
   // seq_ already contains the sentinel; rebuild the rest in stored order
   for (uint32_t i = 0; i < nodeCount; ++i) {
     CRDTEngine::Node node;
     node.id.clock = readInt32(data, offset);
-    node.id.siteID = readInt32(data, offset);
+    node.id.siteID = readUint32(data, offset);
     node.leftNeighborID.clock = readInt32(data, offset);
-    node.leftNeighborID.siteID = readInt32(data, offset);
+    node.leftNeighborID.siteID = readUint32(data, offset);
     node.value = static_cast<char>(data[offset++]);
     node.tombstoned = (data[offset++] != 0x00);
 

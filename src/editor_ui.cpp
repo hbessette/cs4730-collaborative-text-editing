@@ -1,4 +1,5 @@
 #include "editor_ui.h"
+#include "logger.h"
 
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/event.hpp"
@@ -7,7 +8,6 @@
 #include "ftxui/screen/terminal.hpp"
 
 #include <chrono>
-#include <cstdio>
 #include <map>
 #include <optional>
 #include <string>
@@ -166,10 +166,8 @@ static Element renderStatusBar(PeerManager &peerMgr,
   std::string connStr =
       peers.empty() ? "No peers" : std::to_string(peers.size()) + " peer(s)";
 
-  char siteHex[16];
-  std::snprintf(siteHex, sizeof(siteHex), "%08X", peerMgr.siteID());
-
-  std::string label = "  " + connStr + "  |  Site: " + std::string(siteHex) +
+  std::string label = "  " + connStr +
+                      "  |  Site: " + siteToHex(peerMgr.siteID()) +
                       "  |  Esc to quit  ";
 
   // Check for a live disconnect notification and append it.
@@ -196,27 +194,27 @@ static Component makeRenderer(Pipeline &pipeline, PeerManager &peerMgr,
                               std::shared_ptr<std::atomic<int>> cursorPos,
                               std::shared_ptr<int> hScroll,
                               std::shared_ptr<NotifState> notif) {
-  return Renderer([&pipeline, &peerMgr, &cursorSync, cursorPos, hScroll,
-                   notif] {
-    std::string doc = pipeline.getDocument();
-    int termWidth = Terminal::Size().dimx;
+  return Renderer(
+      [&pipeline, &peerMgr, &cursorSync, cursorPos, hScroll, notif] {
+        std::string doc = pipeline.getDocument();
+        int termWidth = Terminal::Size().dimx;
 
-    int pos = std::min(cursorPos->load(), static_cast<int>(doc.size()));
-    auto [curLine, curCol] = posToLineCol(doc, pos);
+        int pos = std::min(cursorPos->load(), static_cast<int>(doc.size()));
+        auto [curLine, curCol] = posToLineCol(doc, pos);
 
-    adjustHScroll(*hScroll, curCol, termWidth);
+        adjustHScroll(*hScroll, curCol, termWidth);
 
-    std::map<std::pair<int, int>, Color> remCursorMap;
-    for (auto &[siteID, rpos] : cursorSync.getRemoteCursors()) {
-      int clamped = std::min(rpos, static_cast<int>(doc.size()));
-      auto [rl, rc] = posToLineCol(doc, clamped);
-      remCursorMap[{rl, rc}] = remCursorColor(siteID);
-    }
+        std::map<std::pair<int, int>, Color> remCursorMap;
+        for (auto &[siteID, rpos] : cursorSync.getRemoteCursors()) {
+          int clamped = std::min(rpos, static_cast<int>(doc.size()));
+          auto [rl, rc] = posToLineCol(doc, clamped);
+          remCursorMap[{rl, rc}] = remCursorColor(siteID);
+        }
 
-    return vbox({renderTextArea(doc, curLine, curCol, *hScroll, termWidth,
-                                remCursorMap),
-                 separator(), renderStatusBar(peerMgr, notif)});
-  });
+        return vbox({renderTextArea(doc, curLine, curCol, *hScroll, termWidth,
+                                    remCursorMap),
+                     separator(), renderStatusBar(peerMgr, notif)});
+      });
 }
 
 // Wraps |inner| with a keyboard event handler that drives the editor.

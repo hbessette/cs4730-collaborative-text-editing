@@ -8,7 +8,7 @@ void CRDTEngine::loadState(CRDTEngine &&other) {
     index_[it->id] = it;
 }
 
-CRDTEngine::CRDTEngine(int siteID) : siteID_(siteID), clock_(0) {
+CRDTEngine::CRDTEngine(uint32_t siteID) : siteID_(siteID), clock_(0) {
   seq_.push_back({SENTINEL_ID, '\0', true, SENTINEL_ID});
   index_[SENTINEL_ID] = seq_.begin();
 }
