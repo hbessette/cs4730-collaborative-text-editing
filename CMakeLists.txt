@@ -36,6 +36,7 @@ add_executable(tests
   tests/test_peer_manager.cpp
   tests/test_pipeline.cpp
   tests/test_state_sync.cpp
+  tests/test_crash_recovery.cpp
   src/rga.cpp
   src/serializer.cpp
   src/peer_socket.cpp

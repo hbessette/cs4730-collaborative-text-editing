@@ -26,9 +26,12 @@
 #include "ftxui/component/screen_interactive.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace ftxui;
@@ -111,24 +114,40 @@ static void setupRemoteOpCallback(Pipeline &pipeline, CursorSync &cursorSync,
 // Wires peer-join/leave callbacks.  Join registers the peer's data address
 // with the UDP socket and their cursor address with CursorSync.
 static void setupPeerCallbacks(PeerManager &peerMgr, PeerSocket &dataSocket,
-                               CursorSync &cursorSync,
-                               ScreenInteractive &screen) {
-  peerMgr.setOnPeerJoin(
-      [&dataSocket, &cursorSync, &screen](uint32_t, const std::string &addr) {
-        auto colon = addr.rfind(':');
-        if (colon != std::string::npos) {
-          std::string ip = addr.substr(0, colon);
-          uint16_t hbPort =
-              static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
-          dataSocket.addPeer(ip + ":" + std::to_string(hbPort - 1));
-          cursorSync.addPeer(ip + ":" + std::to_string(hbPort + 2));
-        }
-        screen.PostEvent(Event::Custom);
-      });
+                               Pipeline &pipeline, CursorSync &cursorSync,
+                               ScreenInteractive &screen,
+                               std::shared_ptr<NotifState> notif) {
+  peerMgr.setOnPeerJoin([&dataSocket, &pipeline, &cursorSync,
+                         &screen](uint32_t peerSiteID,
+                                  const std::string &addr) {
+    pipeline.addKnownSiteID(peerSiteID);
+    auto colon = addr.rfind(':');
+    if (colon != std::string::npos) {
+      std::string ip = addr.substr(0, colon);
+      uint16_t hbPort =
+          static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
+      dataSocket.addPeer(ip + ":" + std::to_string(hbPort - 1));
+      cursorSync.addPeer(ip + ":" + std::to_string(hbPort + 2));
+    }
+    screen.PostEvent(Event::Custom);
+  });
 
   peerMgr.setOnPeerLeave(
-      [&cursorSync, &screen](uint32_t siteID, const std::string &) {
+      [&pipeline, &cursorSync, &screen, notif](uint32_t siteID,
+                                               const std::string &) {
+        pipeline.removeKnownSiteID(siteID);
         cursorSync.removePeer(siteID);
+
+        // Show a transient disconnect message in the status bar.
+        char hex[16];
+        std::snprintf(hex, sizeof(hex), "%08X", siteID);
+        {
+          std::lock_guard<std::mutex> lk(notif->mtx);
+          notif->text = std::string("Peer ") + hex + " disconnected";
+          notif->expires =
+              std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        }
+
         screen.PostEvent(Event::Custom);
       });
 }
@@ -145,6 +164,7 @@ int main(int argc, char *argv[]) {
   CRDTEngine crdt(static_cast<int>(siteID));
   PeerSocket dataSocket(args.dataPort);
   Pipeline pipeline(dataSocket, crdt);
+  pipeline.addKnownSiteID(siteID); // own site is always known
   PeerManager peerMgr(hbPort, siteID);
   CursorSync cursorSync(cursorPort, siteID);
 
@@ -159,12 +179,39 @@ int main(int argc, char *argv[]) {
   auto screen = ScreenInteractive::Fullscreen();
   auto cursorShared = std::make_shared<std::atomic<int>>(0);
   std::atomic<bool> running{true};
+  auto notif = std::make_shared<NotifState>();
 
   // Fire a re-render whenever a remote cursor update arrives.
   cursorSync.setOnUpdate([&screen] { screen.PostEvent(Event::Custom); });
 
   setupRemoteOpCallback(pipeline, cursorSync, screen, cursorShared);
-  setupPeerCallbacks(peerMgr, dataSocket, cursorSync, screen);
+  setupPeerCallbacks(peerMgr, dataSocket, pipeline, cursorSync, screen, notif);
+
+  // When an op arrives from an unknown peer (late discovery / partition
+  // recovery), request a full state sync from the current known peers.
+  // activePeers() returns {siteID, "ip:hbPort"} pairs; TCP sync port = hbPort+1.
+  // The callback spawns a detached thread to avoid blocking the CRDT thread.
+  pipeline.setOnUnknownPeer([&pipeline, &peerMgr, tcpPort](uint32_t) {
+    auto peerList = peerMgr.activePeers();
+    if (peerList.empty())
+      return;
+    std::vector<std::string> tcpAddrs;
+    for (const auto &p : peerList) {
+      const std::string &hbAddr = p.second;
+      auto colon = hbAddr.rfind(':');
+      if (colon != std::string::npos) {
+        std::string ip = hbAddr.substr(0, colon);
+        uint16_t hbPort =
+            static_cast<uint16_t>(std::stoi(hbAddr.substr(colon + 1)));
+        tcpAddrs.push_back(ip + ":" + std::to_string(hbPort + 1));
+      }
+    }
+    if (tcpAddrs.empty())
+      return;
+    std::thread([&pipeline, tcpAddrs, tcpPort]() {
+      pipeline.syncState(tcpAddrs, tcpPort, /*timeoutPerPeerMs=*/3000);
+    }).detach();
+  });
 
   peerMgr.start();
   pipeline.start();
@@ -173,8 +220,8 @@ int main(int argc, char *argv[]) {
   if (!args.isFirst && !syncAddrs.empty())
     pipeline.syncState(syncAddrs, tcpPort, /*timeoutPerPeerMs=*/3000);
 
-  auto editor =
-      MakeEditor(pipeline, peerMgr, cursorSync, screen, running, cursorShared);
+  auto editor = MakeEditor(pipeline, peerMgr, cursorSync, screen, running,
+                           cursorShared, notif);
   screen.Loop(editor);
 
   pipeline.stop();

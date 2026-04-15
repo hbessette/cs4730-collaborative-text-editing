@@ -6,6 +6,7 @@
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/terminal.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <map>
 #include <optional>
@@ -159,7 +160,8 @@ renderTextArea(const std::string &doc, int curLine, int curCol, int hScroll,
 }
 
 // Builds the status bar shown at the bottom of the screen.
-static Element renderStatusBar(PeerManager &peerMgr) {
+static Element renderStatusBar(PeerManager &peerMgr,
+                               std::shared_ptr<NotifState> notif) {
   auto peers = peerMgr.activePeers();
   std::string connStr =
       peers.empty() ? "No peers" : std::to_string(peers.size()) + " peer(s)";
@@ -168,17 +170,34 @@ static Element renderStatusBar(PeerManager &peerMgr) {
   std::snprintf(siteHex, sizeof(siteHex), "%08X", peerMgr.siteID());
 
   std::string label = "  " + connStr + "  |  Site: " + std::string(siteHex) +
-                      "  |  Esc/Ctrl+X to quit  ";
+                      "  |  Esc to quit  ";
 
-  return text(label) | bold | bgcolor(Color::Blue) | color(Color::White);
+  // Check for a live disconnect notification and append it.
+  std::string notifText;
+  {
+    std::lock_guard<std::mutex> lk(notif->mtx);
+    if (std::chrono::steady_clock::now() < notif->expires)
+      notifText = notif->text;
+  }
+
+  if (notifText.empty())
+    return text(label) | bold | bgcolor(Color::Blue) | color(Color::White);
+
+  return hbox({
+      text(label) | bold | bgcolor(Color::Blue) | color(Color::White),
+      text("  " + notifText + "  ") | bold | bgcolor(Color::Yellow) |
+          color(Color::Black),
+  });
 }
 
 // Combines the text area and status bar into the full screen layout.
 static Component makeRenderer(Pipeline &pipeline, PeerManager &peerMgr,
                               CursorSync &cursorSync,
                               std::shared_ptr<std::atomic<int>> cursorPos,
-                              std::shared_ptr<int> hScroll) {
-  return Renderer([&pipeline, &peerMgr, &cursorSync, cursorPos, hScroll] {
+                              std::shared_ptr<int> hScroll,
+                              std::shared_ptr<NotifState> notif) {
+  return Renderer([&pipeline, &peerMgr, &cursorSync, cursorPos, hScroll,
+                   notif] {
     std::string doc = pipeline.getDocument();
     int termWidth = Terminal::Size().dimx;
 
@@ -196,7 +215,7 @@ static Component makeRenderer(Pipeline &pipeline, PeerManager &peerMgr,
 
     return vbox({renderTextArea(doc, curLine, curCol, *hScroll, termWidth,
                                 remCursorMap),
-                 separator(), renderStatusBar(peerMgr)});
+                 separator(), renderStatusBar(peerMgr, notif)});
   });
 }
 
@@ -219,7 +238,7 @@ static Component makeEventHandler(Component inner, Pipeline &pipeline,
         };
         auto [curLine, curCol] = posToLineCol(doc, pos);
 
-        if (event == Event::Escape || event.input() == "\x18") {
+        if (event == Event::Escape) {
           running.store(false);
           screen.ExitLoopClosure()();
           return true;
@@ -336,10 +355,11 @@ static Component makeEventHandler(Component inner, Pipeline &pipeline,
 Component MakeEditor(Pipeline &pipeline, PeerManager &peerMgr,
                      CursorSync &cursorSync, ScreenInteractive &screen,
                      std::atomic<bool> &running,
-                     std::shared_ptr<std::atomic<int>> cursorPos) {
+                     std::shared_ptr<std::atomic<int>> cursorPos,
+                     std::shared_ptr<NotifState> notif) {
   auto hScroll = std::make_shared<int>(0);
   auto renderer =
-      makeRenderer(pipeline, peerMgr, cursorSync, cursorPos, hScroll);
+      makeRenderer(pipeline, peerMgr, cursorSync, cursorPos, hScroll, notif);
   return makeEventHandler(renderer, pipeline, cursorSync, screen, running,
                           cursorPos);
 }

@@ -7,10 +7,12 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 // Thread-safe MPSC (multi-producer, single-consumer) queue.
@@ -85,6 +87,17 @@ public:
   // applied. Must be called before start().
   void setOnRemoteOp(RemoteOpCallback cb);
 
+  // Register a callback invoked (once per siteID) when an op arrives from a
+  // siteID that was not previously added via addKnownSiteID.  The callback
+  // runs outside all internal locks so it may safely call syncState().
+  void setOnUnknownPeer(std::function<void(uint32_t)> cb);
+
+  // Track the set of known siteIDs so that ops from unknown peers can be
+  // detected.  Own siteID should be added at construction time; peer siteIDs
+  // should be added/removed in join/leave callbacks.
+  void addKnownSiteID(uint32_t id);
+  void removeKnownSiteID(uint32_t id);
+
   // Spawn the three background threads (send, receive, CRDT).
   void start();
 
@@ -155,4 +168,9 @@ private:
   std::vector<Operation> syncBuffer_; // guarded by crdtMutex_
 
   RemoteOpCallback onRemoteOp_; // set before start(), read-only afterwards
+
+  // Unknown-peer detection.
+  std::unordered_set<uint32_t> knownSiteIDs_; // protected by knownMutex_
+  std::mutex knownMutex_;
+  std::function<void(uint32_t)> onUnknownPeer_; // set before start()
 };

@@ -13,6 +13,20 @@ void Pipeline::setOnRemoteOp(RemoteOpCallback cb) {
   onRemoteOp_ = std::move(cb);
 }
 
+void Pipeline::setOnUnknownPeer(std::function<void(uint32_t)> cb) {
+  onUnknownPeer_ = std::move(cb);
+}
+
+void Pipeline::addKnownSiteID(uint32_t id) {
+  std::lock_guard<std::mutex> lk(knownMutex_);
+  knownSiteIDs_.insert(id);
+}
+
+void Pipeline::removeKnownSiteID(uint32_t id) {
+  std::lock_guard<std::mutex> lk(knownMutex_);
+  knownSiteIDs_.erase(id);
+}
+
 void Pipeline::start() {
   if (running_.exchange(true))
     return;
@@ -98,6 +112,21 @@ void Pipeline::crdtLoop() {
     }
     if (!buffered && onRemoteOp_)
       onRemoteOp_(op, visOffset);
+
+    // Detect ops from previously unseen peers and trigger a state sync.
+    // We add the siteID to knownSiteIDs_ immediately to suppress repeat
+    // triggers for the same unknown peer.
+    uint32_t sid = static_cast<uint32_t>(op.id.siteID);
+    bool unknown = false;
+    {
+      std::lock_guard<std::mutex> lk(knownMutex_);
+      if (knownSiteIDs_.find(sid) == knownSiteIDs_.end()) {
+        knownSiteIDs_.insert(sid);
+        unknown = true;
+      }
+    }
+    if (unknown && onUnknownPeer_)
+      onUnknownPeer_(sid);
   }
 }
 
