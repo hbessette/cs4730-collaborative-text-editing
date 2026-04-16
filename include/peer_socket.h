@@ -8,7 +8,7 @@
 
 class PeerSocket {
 public:
-  explicit PeerSocket(uint16_t port = 5000);
+  explicit PeerSocket(uint16_t port = 10000);
   ~PeerSocket();
 
   PeerSocket(const PeerSocket &) = delete;

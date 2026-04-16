@@ -8,6 +8,21 @@ void CRDTEngine::loadState(CRDTEngine &&other) {
     index_[it->id] = it;
 }
 
+bool CRDTEngine::canApply(const Operation &op) const {
+  if (op.type == OpType::DELETE)
+    return true;
+  return index_.count(op.leftNeighborID) > 0;
+}
+
+std::vector<CharID> CRDTEngine::getNodeIDs() const {
+  std::vector<CharID> ids;
+  for (const auto &node : seq_) {
+    if (node.id != SENTINEL_ID)
+      ids.push_back(node.id);
+  }
+  return ids;
+}
+
 CRDTEngine::CRDTEngine(uint32_t siteID) : siteID_(siteID), clock_(0) {
   seq_.push_back({SENTINEL_ID, '\0', true, SENTINEL_ID});
   index_[SENTINEL_ID] = seq_.begin();

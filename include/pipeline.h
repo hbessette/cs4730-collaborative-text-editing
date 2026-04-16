@@ -160,6 +160,11 @@ private:
   bool syncing_{false};               // guarded by crdtMutex_
   std::vector<Operation> syncBuffer_; // guarded by crdtMutex_
 
+  // Out-of-order buffer: ops whose leftNeighborID is not yet in the CRDT
+  // (due to UDP reordering) are held here and retried after each successful
+  // apply.  Accessed only from the CRDT thread (under crdtMutex_).
+  std::deque<Operation> pendingOps_;
+
   RemoteOpCallback onRemoteOp_; // set before start(), read-only afterwards
 
   // Unknown-peer detection.

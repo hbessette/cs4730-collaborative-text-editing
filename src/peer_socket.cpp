@@ -2,6 +2,7 @@
 #include "net_utils.h"
 
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -54,18 +55,20 @@ PeerSocket::~PeerSocket() {
 
 // Parse "ip:port" or bare "ip" (uses own port_).
 void PeerSocket::addPeer(const std::string &addr) {
-  struct sockaddr_in sa;
-  std::memset(&sa, 0, sizeof(sa));
-  sa.sin_family = AF_INET;
-
   std::string ip;
   uint16_t port = port_;
   parseAddr(addr, ip, port, port_);
 
-  if (::inet_pton(AF_INET, ip.c_str(), &sa.sin_addr) != 1)
-    throw std::runtime_error("PeerSocket::addPeer: invalid address: " + addr);
+  struct sockaddr_in sa;
 
-  sa.sin_port = htons(port);
+  struct addrinfo hints{}, *res = nullptr;
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_DGRAM;
+  std::string portStr = std::to_string(port);
+  if (::getaddrinfo(ip.c_str(), portStr.c_str(), &hints, &res) != 0 || !res)
+    throw std::runtime_error("PeerSocket::addPeer: cannot resolve: " + addr);
+  std::memcpy(&sa, res->ai_addr, sizeof(sa));
+  ::freeaddrinfo(res);
   peers_.push_back(sa);
 }
 

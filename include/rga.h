@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 struct CharID {
   int clock;
@@ -63,6 +64,15 @@ public:
   // character held just before it was deleted.  Returns -1 if id is not found
   // or if id == SENTINEL_ID.
   int visibleOffsetOf(const CharID &id) const;
+
+  // Return all CharIDs in the sequence (excluding the sentinel).
+  // Used to emit LATENCY_APPLY log entries after a state snapshot is loaded.
+  std::vector<CharID> getNodeIDs() const;
+
+  // Returns true if op can be applied without a missing-dependency crash.
+  // An INSERT requires its leftNeighborID to already be in the index.
+  // A DELETE always returns true (no-ops gracefully if the target is absent).
+  bool canApply(const Operation &op) const;
 
 private:
   struct Node {

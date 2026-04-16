@@ -64,6 +64,7 @@ void Logger::log(LogLevel level, const std::string &module,
   std::lock_guard<std::mutex> lk(mutex_);
   file_ << '[' << timeBuf << "] [" << levelStr[lvlIdx] << "] [" << siteBuf
         << "] [" << module << "] " << msg << '\n';
+  file_.flush();
 }
 
 void Logger::debug(const std::string &m, const std::string &s) {

@@ -1,17 +1,20 @@
 #include "state_sync.h"
+#include "logger.h"
 #include "net_utils.h"
 #include "serializer.h"
 
 #include <arpa/inet.h>
-#include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
+#include <thread>
 
 static void throwErrno(const char *msg) {
   throw std::runtime_error(std::string(msg) + ": " + std::strerror(errno));
@@ -91,6 +94,8 @@ void StateSync::startServer() {
     throwErrno("StateSync::startServer: listen");
   }
 
+  LOG_INFO("state_sync", "TCP state-sync server listening on port " +
+                             std::to_string(tcpPort_));
   serverThread_ = std::thread(&StateSync::serverLoop, this);
 }
 
@@ -169,52 +174,52 @@ static bool tryPeerImpl(const std::string &addr, uint16_t defaultPort,
   uint16_t port;
   parseAddr(addr, ip, port, defaultPort);
 
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0)
+  LOG_INFO("state_sync", "tryPeer attempting " + ip + ":" + std::to_string(port));
+
+  struct addrinfo hints{}, *res = nullptr;
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  std::string portStr = std::to_string(port);
+  if (::getaddrinfo(ip.c_str(), portStr.c_str(), &hints, &res) != 0 || !res) {
+    LOG_WARN("state_sync", "tryPeer getaddrinfo failed for host=" + ip);
     return false;
-
-  // Non-blocking connect so we can enforce a timeout.
-  int flags = ::fcntl(fd, F_GETFL, 0);
-  ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-
+  }
   struct sockaddr_in sa;
-  std::memset(&sa, 0, sizeof(sa));
-  sa.sin_family = AF_INET;
-  sa.sin_port = htons(port);
-  if (::inet_pton(AF_INET, ip.c_str(), &sa.sin_addr) != 1) {
-    ::close(fd);
-    return false;
-  }
+  std::memcpy(&sa, res->ai_addr, sizeof(sa));
+  ::freeaddrinfo(res);
 
-  int ret = ::connect(fd, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa));
-  if (ret < 0 && errno != EINPROGRESS) {
-    ::close(fd);
-    return false;
-  }
+  // Retry loop: cluster node clocks may be slightly skewed, so the peer might
+  // not be listening yet even if we started second.  Mirror PA2's approach of
+  // retrying with short delays for the full timeout window.
+  auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  int fd = -1;
+  while (true) {
+    fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+      return false;
 
-  // Wait for connect to finish.
-  {
-    fd_set wfds;
-    FD_ZERO(&wfds);
-    FD_SET(fd, &wfds);
     struct timeval tv;
     tv.tv_sec = timeoutMs / 1000;
     tv.tv_usec = static_cast<long>(timeoutMs % 1000) * 1000L;
-    if (::select(fd + 1, nullptr, &wfds, nullptr, &tv) <= 0) {
-      ::close(fd);
-      return false;
-    }
-    int err = 0;
-    socklen_t errLen = sizeof(err);
-    ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errLen);
-    if (err != 0) {
-      ::close(fd);
-      return false;
-    }
-  }
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-  // Restore blocking mode.
-  ::fcntl(fd, F_SETFL, flags);
+    if (::connect(fd, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa)) ==
+        0)
+      break; // connected
+
+    ::close(fd);
+    fd = -1;
+
+    if (std::chrono::steady_clock::now() >= deadline) {
+      LOG_WARN("state_sync", "tryPeer connect() failed to " + ip + ":" +
+                                 std::to_string(port) + ": " +
+                                 std::strerror(errno));
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
 
   // Send STATE_REQUEST byte.
   static constexpr uint8_t kStateRequest = 0x01;
@@ -270,3 +275,4 @@ bool StateSync::requestState(const std::vector<std::string> &peers,
   }
   return false;
 }
+

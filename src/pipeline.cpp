@@ -12,6 +12,12 @@ static long long nowMs() {
       .count();
 }
 
+static long long wallUs() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
 static const char *opTypeName(OpType t) {
   return t == OpType::INSERT ? "INSERT" : "DELETE";
 }
@@ -95,6 +101,10 @@ void Pipeline::sendLoop() {
   Operation op;
   while (outgoing_.pop(op, stopped_)) {
     std::vector<uint8_t> bytes = Serializer::encode(op);
+    LOG_INFO("latency", std::string("LATENCY_SEND siteID=") +
+                            std::to_string(op.id.siteID) + " clock=" +
+                            std::to_string(op.id.clock) + " ts_us=" +
+                            std::to_string(wallUs()));
     socket_.send(bytes);
     LOG_DEBUG("pipeline", std::string("OP_SEND type=") + opTypeName(op.type) +
                               " clock=" + std::to_string(op.id.clock) +
@@ -120,45 +130,89 @@ void Pipeline::receiveLoop() {
   }
 }
 
+// Apply one op to the CRDT (must hold crdtMutex_).  Emits LATENCY_APPLY and
+// returns the visible offset; does NOT fire onRemoteOp_ or unknown-peer logic.
+static void applyOneCrdt(CRDTEngine &crdt, const Operation &op) {
+  crdt.applyRemote(op);
+  LOG_INFO("latency", std::string("LATENCY_APPLY siteID=") +
+                          std::to_string(op.id.siteID) + " clock=" +
+                          std::to_string(op.id.clock) + " ts_us=" +
+                          std::to_string(wallUs()));
+  LOG_DEBUG("pipeline", std::string("OP_APPLY type=") +
+                            opTypeName(op.type) +
+                            " clock=" + std::to_string(op.id.clock) +
+                            " siteID=" + std::to_string(op.id.siteID));
+}
+
+// Drain pendingOps_: repeatedly scan until no op can be applied.  Must hold
+// crdtMutex_.  Returns a list of (op, visOffset) for caller to notify.
+static std::vector<std::pair<Operation, int>>
+drainPending(CRDTEngine &crdt, std::deque<Operation> &pending) {
+  std::vector<std::pair<Operation, int>> notified;
+  bool progress = true;
+  while (progress && !pending.empty()) {
+    progress = false;
+    for (auto it = pending.begin(); it != pending.end();) {
+      if (crdt.canApply(*it)) {
+        applyOneCrdt(crdt, *it);
+        notified.push_back({*it, crdt.visibleOffsetOf(it->id)});
+        it = pending.erase(it);
+        progress = true;
+      } else {
+        ++it;
+      }
+    }
+  }
+  return notified;
+}
+
 void Pipeline::crdtLoop() {
   Operation op;
   while (incoming_.pop(op, stopped_)) {
+    std::vector<std::pair<Operation, int>> toNotify;
     bool buffered = false;
-    int visOffset = -1;
+
     {
       std::lock_guard<std::mutex> lk(crdtMutex_);
       if (syncing_) {
         syncBuffer_.push_back(op);
         buffered = true;
+      } else if (!crdt_.canApply(op)) {
+        // Dependency not yet in the CRDT (UDP out-of-order delivery).
+        // Buffer and retry when the missing predecessor arrives.
+        pendingOps_.push_back(op);
+        buffered = true;
       } else {
-        crdt_.applyRemote(op);
-        visOffset = crdt_.visibleOffsetOf(op.id);
-        LOG_DEBUG("pipeline", std::string("OP_APPLY type=") +
-                                  opTypeName(op.type) +
-                                  " clock=" + std::to_string(op.id.clock) +
-                                  " siteID=" + std::to_string(op.id.siteID));
+        applyOneCrdt(crdt_, op);
+        int visOffset = crdt_.visibleOffsetOf(op.id);
+        toNotify.push_back({op, visOffset});
+        // Each successful apply may unblock pending ops.
+        auto drained = drainPending(crdt_, pendingOps_);
+        toNotify.insert(toNotify.end(), drained.begin(), drained.end());
       }
     }
-    if (!buffered && onRemoteOp_)
-      onRemoteOp_(op, visOffset);
 
-    // Detect ops from previously unseen peers and trigger a state sync.
-    // We add the siteID to knownSiteIDs_ immediately to suppress repeat
-    // triggers for the same unknown peer.
-    uint32_t sid = static_cast<uint32_t>(op.id.siteID);
-    bool unknown = false;
-    {
-      std::lock_guard<std::mutex> lk(knownMutex_);
-      if (knownSiteIDs_.find(sid) == knownSiteIDs_.end()) {
-        knownSiteIDs_.insert(sid);
-        unknown = true;
+    for (const auto &entry : toNotify)
+      if (onRemoteOp_)
+        onRemoteOp_(entry.first, entry.second);
+
+    if (!buffered) {
+      // Detect ops from previously unseen peers and trigger a state sync.
+      uint32_t sid = static_cast<uint32_t>(op.id.siteID);
+      bool unknown = false;
+      {
+        std::lock_guard<std::mutex> lk(knownMutex_);
+        if (knownSiteIDs_.find(sid) == knownSiteIDs_.end()) {
+          knownSiteIDs_.insert(sid);
+          unknown = true;
+        }
       }
-    }
-    if (unknown) {
-      LOG_INFO("pipeline", "unknown peer siteID=" + std::to_string(sid) +
-                               " triggering state sync");
-      if (onUnknownPeer_)
-        onUnknownPeer_(sid);
+      if (unknown) {
+        LOG_INFO("pipeline", "unknown peer siteID=" + std::to_string(sid) +
+                                 " triggering state sync");
+        if (onUnknownPeer_)
+          onUnknownPeer_(sid);
+      }
     }
   }
 }
@@ -168,6 +222,7 @@ std::vector<uint8_t> Pipeline::serializeState() {
   std::lock_guard<std::mutex> lk(crdtMutex_);
   return Serializer::encodeState(crdt_);
 }
+
 
 bool Pipeline::syncState(const std::vector<std::string> &peers,
                          uint16_t tcpPort, int timeoutPerPeerMs) {
@@ -186,10 +241,30 @@ bool Pipeline::syncState(const std::vector<std::string> &peers,
         {
           std::lock_guard<std::mutex> lk(crdtMutex_);
           crdt_.loadState(std::move(newState));
-          for (const auto &op : syncBuffer_) {
-            crdt_.applyRemote(op);
-            toNotify.push_back({op, crdt_.visibleOffsetOf(op.id)});
+          // Emit LATENCY_APPLY for every op included in the state snapshot so
+          // the latency analysis script can match them against LATENCY_SEND
+          // entries from the sender (joined on siteID + clock).
+          for (const auto &id : crdt_.getNodeIDs()) {
+            LOG_INFO("latency", std::string("LATENCY_APPLY siteID=") +
+                                    std::to_string(id.siteID) + " clock=" +
+                                    std::to_string(id.clock) + " ts_us=" +
+                                    std::to_string(wallUs()));
           }
+          // Apply buffered ops in arrival order; those that are still
+          // out-of-order go into pendingOps_ and are drained at the end.
+          for (const auto &bop : syncBuffer_) {
+            if (crdt_.canApply(bop)) {
+              applyOneCrdt(crdt_, bop);
+              toNotify.push_back({bop, crdt_.visibleOffsetOf(bop.id)});
+              auto drained = drainPending(crdt_, pendingOps_);
+              toNotify.insert(toNotify.end(), drained.begin(), drained.end());
+            } else {
+              pendingOps_.push_back(bop);
+            }
+          }
+          // Final drain pass in case any pending ops are now satisfiable.
+          auto drained = drainPending(crdt_, pendingOps_);
+          toNotify.insert(toNotify.end(), drained.begin(), drained.end());
           syncBuffer_.clear();
           syncing_ = false;
         }
