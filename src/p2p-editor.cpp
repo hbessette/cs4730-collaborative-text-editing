@@ -325,7 +325,13 @@ int main(int argc, char *argv[]) {
 
   stateServer.startServer();
 
-  setupUnknownPeerCallback(pipeline, peerMgr, myPorts);
+  // In headless mode all peers are pre-registered via --peer, and the initial
+  // syncState handles bootstrap.  Re-syncing on unknown-peer detection would
+  // call loadState (full state replacement), clobbering local ops that the
+  // remote peer hasn't yet received — causing CRDT divergence under high
+  // concurrency.  Out-of-order UDP delivery is handled by pendingOps_ instead.
+  if (!args.headless)
+    setupUnknownPeerCallback(pipeline, peerMgr, myPorts);
 
   if (args.headless)
     setupHeadlessPeerCallbacks(peerMgr, dataSocket, pipeline, cursorSync);

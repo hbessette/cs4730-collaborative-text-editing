@@ -6,8 +6,13 @@
 #include <utility>
 #include <vector>
 
+// Thin SOCK_DGRAM (UDP) socket wrapper used by Pipeline, PeerManager, and
+// CursorSync.  Maintains a list of registered peer destinations; send()
+// broadcasts a byte buffer to all of them.  Each module creates its own
+// PeerSocket on its own port — they do not share a socket.
 class PeerSocket {
 public:
+  // Bind a UDP socket to `port` on all interfaces (INADDR_ANY).
   explicit PeerSocket(uint16_t port = 10000);
   ~PeerSocket();
 
@@ -27,6 +32,7 @@ public:
   // Returns { payload, "sender_ip:port" }.
   std::pair<std::vector<uint8_t>, std::string> receive(int timeout_ms = -1);
 
+  // Return the underlying file descriptor (used by StateSync to set SO_REUSEADDR).
   int fd() const { return sock_; }
 
 private:

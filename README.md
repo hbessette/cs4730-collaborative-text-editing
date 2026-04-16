@@ -1,6 +1,40 @@
 # p2p Collaborative Text Editor
 
-A peer-to-peer collaborative text editor built in C++.
+A peer-to-peer collaborative text editor written in C++11. Multiple peers edit the same document simultaneously over a LAN or cluster. Conflicts are resolved automatically using a **Replicated Growable Array (RGA) CRDT** — every peer converges to the same document with no central server.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed description of every module, the data-flow pipeline, and the CRDT algorithm. See [EVALUATION.md](EVALUATION.md) for methodology and results.
+
+## Architecture overview
+
+```mermaid
+graph TD
+    UI["UI Thread (FTXUI)"]
+    PL["Pipeline"]
+    CRDT["CRDTEngine (RGA)"]
+    PM["PeerManager"]
+    CS["CursorSync"]
+    SS["StateSync"]
+    NET["Other peers"]
+
+    UI -- "localInsert / localDelete" --> PL
+    PL -- "RemoteOpCallback" --> UI
+    PL -- "sendLoop UDP" --> NET
+    NET -- "recvLoop UDP" --> PL
+    PL --> CRDT
+    PM -- "UDP heartbeat" <--> NET
+    PM -- "join/leave callbacks" --> CS
+    CS -- "UDP 8 B" <--> NET
+    SS -- "TCP bootstrap" <--> NET
+```
+
+Each peer instance occupies **four consecutive ports** starting from `--port P`:
+
+| Port  | Protocol | Purpose                        |
+|-------|----------|--------------------------------|
+| P     | UDP      | CRDT operations                |
+| P+1   | UDP      | Heartbeat / peer discovery     |
+| P+2   | TCP      | State sync (late-join bootstrap)|
+| P+3   | UDP      | Cursor position broadcast      |
 
 ## Dependencies
 
@@ -15,6 +49,21 @@ A peer-to-peer collaborative text editor built in C++.
 cmake -B build
 cmake --build build
 ```
+
+Or via Make:
+
+```bash
+make build          # release build
+make build-debug    # with debug logging (ENABLE_DEBUG_LOG=ON)
+```
+
+**CMake options:**
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `ENABLE_DEBUG_LOG` | OFF | Compile per-operation DEBUG log entries (needed for latency analysis) |
+| `ENABLE_ASAN` | OFF | Build with AddressSanitizer (tests only) |
+| `ENABLE_TSAN` | OFF | Build with ThreadSanitizer (tests only) |
 
 ## Run
 
@@ -52,18 +101,7 @@ Multiple `--peer` flags can be provided:
 ./build/p2p-editor --port 10020 --peer 127.0.0.1:10000 --peer 127.0.0.1:10010
 ```
 
-### Port layout
-
-Each instance occupies four consecutive ports starting from `--port P`:
-
-| Port  | Purpose              |
-|-------|----------------------|
-| P     | CRDT operations (UDP)|
-| P+1   | Heartbeat / peer discovery (UDP) |
-| P+2   | State sync (TCP)     |
-| P+3   | Cursor sync (UDP)    |
-
-> **Cluster note:** The cluster only permits ports ≥ 10000. The default port (10000) and the `latency_eval.sh` script are configured accordingly. When running multiple peers on the same node, use a 10-port gap (e.g. 10000, 10010, 10020) to avoid collisions across the four-port range.
+> **Cluster note:** The cluster only permits ports ≥ 10000. The default port is 10000. When running multiple peers on the same node, use a 10-port gap (e.g. 10000, 10010, 10020) to avoid collisions across the four-port range.
 
 ### Keyboard shortcuts
 
@@ -73,7 +111,7 @@ Each instance occupies four consecutive ports starting from `--port P`:
 | Backspace / Delete      | Delete character                |
 | Arrow keys              | Move cursor                     |
 | Home / End              | Jump to line start / end        |
-| Escape                  | Quit (broadcasts LEAVE to peers)|
+| Escape / Ctrl+X         | Quit (broadcasts LEAVE to peers)|
 
 ### Logging
 
@@ -93,9 +131,9 @@ Log lines follow the format:
 [YYYY-MM-DD HH:MM:SS.mmm] [LEVEL] [SITEHHEX] [module] message
 ```
 
-Logged events include peer join/leave, state sync start/result, and (when debug logging is compiled in) every operation sent and received with a millisecond timestamp for latency measurement.
+Logged events include peer join/leave, state sync start/result, and (when debug logging is compiled in) every operation sent and received with a microsecond timestamp for latency measurement.
 
-To correlate send and receive latency across peers, join `OP_SEND` entries from one peer's log with `OP_RECV` entries from another on the same `clock` + `siteID` values.
+To correlate send and receive latency across peers, join `LATENCY_SEND` entries from one peer's log with `LATENCY_APPLY` entries from another on the same `siteID` + `clock` values.
 
 #### Debug logging
 
@@ -131,50 +169,51 @@ Script commands (one per line; `#` and blank lines are ignored):
 | `DUMP`             | Print the current document to stdout      |
 | `QUIT`             | Exit (EOF also exits)                     |
 
-## Latency evaluation
+## Test
 
-End-to-end operation propagation latency can be measured across a cluster using the scripts in `scripts/`.
+```bash
+./build/tests
+# or
+make test
+```
+
+The test suite covers: RGA CRDT correctness, wire-format codecs, UDP socket, peer discovery, pipeline threading, TCP state transfer, and crash-recovery scenarios.
+
+## Evaluation
+
+Evaluations are run on a Linux cluster over SSH. All scripts live in `scripts/` and assume a shared NFS home directory (paths identical on every node). Timestamps use microsecond precision; cluster nodes must be NTP-synchronized.
+
+See [EVALUATION.md](EVALUATION.md) for full methodology and results.
 
 ### Requirements
 
 - Passwordless SSH from the coordinating machine to each cluster node
-- The `p2p-editor` binary built on each cluster node
-- NTP-synchronized clocks on all nodes
-- Python 3 on the coordinating machine
+- The `p2p-editor` binary built and accessible at the same path on every node
+- NTP-synchronized clocks
+- Python 3
 
 ### SSH setup
 
-The eval script connects to cluster nodes over SSH without prompting for a password. If your cluster nodes share a home directory, this one-time setup is all that's needed.
-
-**1. Create the `.ssh` directory if it doesn't exist:**
+**1. Create `.ssh` if needed:**
 
 ```bash
-mkdir -p ~/.ssh
-chmod 700 ~/.ssh
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
 ```
 
-**2. Generate a key (skip if you already have `~/.ssh/id_ed25519`):**
+**2. Generate a key (skip if `~/.ssh/id_ed25519` already exists):**
 
 ```bash
-ssh-keygen -t ed25519
-# Leave the passphrase blank (just press Enter twice)
+ssh-keygen -t ed25519   # leave passphrase blank
 ```
 
-If you accidentally set a passphrase and want to remove it:
-
-```bash
-ssh-keygen -p -f ~/.ssh/id_ed25519
-# Enter your current passphrase, then press Enter twice for the new one
-```
-
-**3. Authorize the key:**
+**3. Authorize it:**
 
 ```bash
 cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
 ```
 
-Because the home directory is shared across nodes, this immediately allows passwordless SSH to every node.
+Because the home directory is shared, this authorizes every cluster node at once.
 
 **4. Test:**
 
@@ -182,66 +221,95 @@ Because the home directory is shared across nodes, this immediately allows passw
 ssh node01   # should connect without a password prompt
 ```
 
-### Setup
+### Cluster config
 
-Edit `scripts/cluster.conf` with the hostnames of your cluster nodes (one per line). The first host is the **sender**; the rest are **receivers**.
+Edit `scripts/cluster.conf` — one `user@hostname` per line. The first entry is peer 0 (sender/first-writer); the rest are additional peers.
 
 ```
-node01   # sender — generates 1000 INSERT operations
-node02   # receiver
-node03   # receiver
-node04   # receiver
-node05   # receiver
+user@node01
+user@node02
+user@node03
+user@node04
+user@node05
 ```
+
+### Eval types
+
+| Type | What it measures | Who writes |
+|------|-----------------|------------|
+| `latency` | Op propagation time from sender to receivers | Peer 0 only |
+| `convergence` | CRDT correctness — 50 trials, 3–5 peers, random ops | All peers |
+| `concurrent` | Same as convergence, no startup stagger (max contention) | All peers |
+| `scalability` | Throughput, convergence time, CPU as peer count scales 2→10 | All peers |
 
 ### Run
 
 ```bash
-# Run 2-peer and 5-peer experiments (reads hostnames from cluster.conf)
-./scripts/latency_eval.sh --binary ./build/p2p-editor --config scripts/cluster.conf
+# Latency — runs 2-peer and 5-peer sub-experiments
+make eval-latency
+
+# Convergence — 50 trials, 3–5 peers, 200 random insert/delete ops each
+make eval-convergence
+
+# Concurrent — all peers write with no startup delay
+make eval-concurrent
+
+# Scalability — 2/4/6/8/10 peers, 100 ops @ 5 ops/sec
+make eval-scalability
+
+# Analyze all results
+make analyze
 ```
-
-Or pass hostnames directly:
-
-```bash
-./scripts/latency_eval.sh --binary ./build/p2p-editor node01 node02 node03 node04 node05
-```
-
-`--binary` is the path to `p2p-editor` **on the remote nodes**. It can also be set via the `$REMOTE_BINARY` environment variable.
-
-The script:
-1. Copies the sender/receiver scripts to each node
-2. Launches receivers, waits 5 s for them to stabilize
-3. Runs the sender (1000 INSERT ops over ~12 s)
-4. Collects all log files into `logs/2peer/` and `logs/5peer/`
 
 ### Analyze
 
 ```bash
-python3 scripts/analyze_latency.py logs/
+python3 scripts/analyze_results.py logs/
+# or
+make analyze
 ```
 
-This parses the `LATENCY_SEND` / `LATENCY_APPLY` records from each log, joins them on the unique `(siteID, clock)` operation key, and reports:
-
-- P50 / P95 / P99 end-to-end latency per configuration
-- Per-configuration drop rate (ops sent but never received)
-- Histogram PNG saved to `scripts/latency_histogram.png`
-- A formatted section suitable for pasting into an evaluation report
-
-### Generate a custom sender script
+Reports: sample count, drop rate, P50/P95/P99 latency per configuration, and convergence PASS/FAIL per trial.
 
 ```bash
-# 1000 ops, 10 ms sleep every 10 inserts (default)
-python3 scripts/gen_inserts.py > my_script.txt
-
-# 2000 ops, 5 ms sleep every 5 inserts
-python3 scripts/gen_inserts.py --count 2000 --sleep-ms 5 --batch 5 > my_script.txt
+python3 scripts/analyze_results.py logs/ --csv logs/summary.csv
 ```
 
-## Test
+### Collect results
 
 ```bash
-./build/tests
+make collect
+# → logs/eval_<timestamp>.tar.gz
+```
+
+On non-NFS clusters:
+
+```bash
+./scripts/collect_results.sh --scp --config scripts/cluster.conf --results logs/
+```
+
+### Clear logs between runs
+
+Log files accumulate across runs. Always clear before a fresh experiment:
+
+```bash
+make clean-eval
+```
+
+### Generating custom headless scripts
+
+**Sequential scripts** (`scripts/automated_typing.sh`):
+
+```bash
+./scripts/automated_typing.sh --mode sender --ops 500 > my_sender.txt
+./scripts/automated_typing.sh --mode receiver --start-delay 10000 > my_receiver.txt
+```
+
+**Random scripts** (`scripts/gen_convergence_script.py`):
+
+```bash
+python3 scripts/gen_convergence_script.py --ops 200 --seed 42 > peer0.txt
+python3 scripts/gen_convergence_script.py --ops 200 --peer-id 1 --seed 43 > peer1.txt
 ```
 
 ## Project Structure
@@ -249,9 +317,21 @@ python3 scripts/gen_inserts.py --count 2000 --sleep-ms 5 --batch 5 > my_script.t
 ```
 .
 ├── CMakeLists.txt
-├── include/       # Header files
-├── src/           # Application source files
-├── tests/         # Test source files
-├── scripts/       # Utility scripts
-└── docs/          # Documentation
+├── Makefile
+├── include/           # Header files (all public interfaces)
+│   ├── rga.h          # CRDT engine (RGA algorithm)
+│   ├── pipeline.h     # Three-thread send/receive/apply pipeline
+│   ├── serializer.h   # Wire-format codecs
+│   ├── peer_manager.h # UDP heartbeat peer discovery
+│   ├── peer_socket.h  # UDP socket abstraction
+│   ├── state_sync.h   # TCP full-state bootstrap
+│   ├── cursor_sync.h  # UDP cursor position broadcast
+│   ├── editor_ui.h    # FTXUI terminal editor component
+│   ├── logger.h       # Thread-safe structured logger
+│   └── net_utils.h    # Port layout and address parsing
+├── src/               # Application source files
+│   └── p2p-editor.cpp # main() — startup, wiring, event loop
+├── tests/             # Unit and integration test suite
+├── scripts/           # Evaluation orchestration and analysis
+└── docs/              # Additional documentation
 ```
