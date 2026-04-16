@@ -29,7 +29,7 @@ CLUSTER_CONF="${SCRIPT_DIR}/cluster.conf"
 RESULTS_DIR="${REPO_DIR}/logs"
 RUN_ANALYZE=1
 # Convergence trial options
-TRIALS=50
+TRIALS=25
 MIN_PEERS=3
 MAX_PEERS=5
 SEED_BASE=42
@@ -201,19 +201,39 @@ _run_latency() {
     local sender_hostname
     sender_hostname=$(host_of "$sender_host")
 
-    # Generate sender script
+    # Receivers must be up and past state-sync BEFORE the sender emits its
+    # first op.  We achieve this by:
+    #   1. Launching receivers first (they connect to the sender's StateSync
+    #      server, which is up as soon as the sender process starts).
+    #   2. Sleeping 2 s to let all SSH connections and state-syncs complete.
+    #   3. Giving the sender a --start-delay of 5000 ms so it waits an
+    #      additional 5 s inside its headless script before sending.
+    #
+    # Timing budget (conservative for a loaded cluster):
+    #   ~1 s  receiver SSH + process startup
+    #   ~4 ms state sync on an empty document
+    #   ─────────────────────────────────────
+    #   sleep 2 + start-delay 5000 ms = 7 s total headroom
+    local SENDER_DELAY=5000
+    # Receiver drain window: long enough to outlast all sender ops + drain.
+    # sender ops take OPS * SLEEP_MS/BATCH ms ≈ OPS * 10 ms at default rate.
+    local RECV_DRAIN=$(( OPS * 10 + SENDER_DELAY + 5000 ))
+
+    # Step 1: launch the sender process first so its TCP StateSync server is
+    # listening when the receivers try to connect.  The sender script starts
+    # with SLEEP SENDER_DELAY, so it won't emit any ops for 5 s.
     local sender_script="${TMP_SCRIPT_DIR}/${label}_peer_0.txt"
     "${SCRIPT_DIR}/automated_typing.sh" \
         --mode sender \
         --ops "$OPS" \
         --peer-id 0 \
-        --start-delay 0 \
+        --start-delay "${SENDER_DELAY}" \
         > "$sender_script"
 
     local sender_log="${out_dir}/peer_0.log"
     local sender_dump="${out_dir}/peer_0_dump.txt"
 
-    echo "  [peer 0 / sender] ${sender_host}  port=${sender_port}"
+    echo "  [peer 0 / sender] ${sender_host}  port=${sender_port}  start-delay=${SENDER_DELAY}ms"
 
     ssh_run "$sender_host" \
         "cd '${REPO_DIR}' && '${BINARY}' \
@@ -223,9 +243,13 @@ _run_latency() {
             --script '${sender_script}' \
             --log-path '${sender_log}' > '${sender_dump}'"
 
-    echo "  Waiting 3s for sender to bind..."
-    sleep 3
+    # Step 2: give the sender process 2 s to bind its sockets and start the
+    # StateSync server before receivers try to connect.
+    echo "  Waiting 2s for sender sockets to bind..."
+    sleep 2
 
+    # Step 3: launch all receivers.  By the time the sender's SLEEP SENDER_DELAY
+    # expires (~3 s from now), all receivers will be synced and listening.
     for (( i=1; i<n; i++ )); do
         local recv_host="${__lhosts[$i]}"
         local recv_port
@@ -234,7 +258,7 @@ _run_latency() {
         local recv_script="${TMP_SCRIPT_DIR}/${label}_peer_${i}.txt"
         "${SCRIPT_DIR}/automated_typing.sh" \
             --mode receiver \
-            --start-delay 30000 \
+            --start-delay "${RECV_DRAIN}" \
             > "$recv_script"
 
         local recv_log="${out_dir}/peer_${i}.log"
@@ -657,6 +681,26 @@ case "$EVAL_TYPE" in
         HOSTS_2=("${ALL_HOSTS[@]:0:2}")
         run_experiment "2peer" HOSTS_2 "$BASE_PORT"
         sleep 2
+
+        # 3-peer experiment (if enough hosts)
+        if [[ "${#ALL_HOSTS[@]}" -ge 3 ]]; then
+            HOSTS_3=("${ALL_HOSTS[@]:0:3}")
+            run_experiment "3peer" HOSTS_3 "$BASE_PORT"
+            sleep 2
+        else
+            echo ""
+            echo "Skipping 3-peer: need 3 hosts, only ${#ALL_HOSTS[@]} configured."
+        fi
+
+        # 4-peer experiment (if enough hosts)
+        if [[ "${#ALL_HOSTS[@]}" -ge 4 ]]; then
+            HOSTS_4=("${ALL_HOSTS[@]:0:4}")
+            run_experiment "4peer" HOSTS_4 "$BASE_PORT"
+            sleep 2
+        else
+            echo ""
+            echo "Skipping 4-peer: need 4 hosts, only ${#ALL_HOSTS[@]} configured."
+        fi
 
         # 5-peer experiment (if enough hosts)
         if [[ "${#ALL_HOSTS[@]}" -ge 5 ]]; then

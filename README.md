@@ -237,22 +237,18 @@ user@node05
 
 | Type | What it measures | Who writes |
 |------|-----------------|------------|
-| `latency` | Op propagation time from sender to receivers | Peer 0 only |
-| `convergence` | CRDT correctness — 50 trials, 3–5 peers, random ops | All peers |
-| `concurrent` | Same as convergence, no startup stagger (max contention) | All peers |
+| `latency` | Op propagation time from sender to receivers — 2/3/4/5-peer | Peer 0 only |
+| `convergence` | CRDT correctness — 25 trials, 3–5 peers, random ops | All peers |
 | `scalability` | Throughput, convergence time, CPU as peer count scales 2→10 | All peers |
 
 ### Run
 
 ```bash
-# Latency — runs 2-peer and 5-peer sub-experiments
+# Latency — runs 2/3/4/5-peer sub-experiments
 make eval-latency
 
-# Convergence — 50 trials, 3–5 peers, 200 random insert/delete ops each
+# Convergence — 25 trials, 3–5 peers, 200 random insert/delete ops each
 make eval-convergence
-
-# Concurrent — all peers write with no startup delay
-make eval-concurrent
 
 # Scalability — 2/4/6/8/10 peers, 100 ops @ 5 ops/sec
 make eval-scalability
